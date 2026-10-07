@@ -1,0 +1,120 @@
+"""FR-06 cloning, FR-07 product history and FR-10 clean-up of one repository.
+
+A LocalRepository owns one clone in a fresh system-managed temporary directory. It is
+used as a context manager, so the clone is deleted when the work finishes and also when
+any stage fails (FR-10). A failed clone deletes its partial files before the error is
+raised.
+
+GitHub repositories are cloned from their HTTPS address, built from the parsed owner and
+repository (execution plan, Task 3 decision 5), with no token (FR-04 uses the token for
+API requests only) and with git's credential prompts off, so a failure cannot hang. A
+local path can be cloned too; the tests use this.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import stat
+import sys
+import tempfile
+from collections.abc import Callable
+from pathlib import Path
+from types import TracebackType
+from typing import Any
+
+from git import GitCommandError, Repo
+
+from tdea.git_handler.commit_info import CommitInfo
+from tdea.git_handler.errors import ErrorCode, TdeaError
+from tdea.git_handler.url_validator import RepositoryRef
+
+CLONE_ENV = {"GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
+TEMP_PREFIX = "tdea-clone-"
+
+
+class LocalRepository:
+    """One full clone (all history, all branch references) in a temporary directory."""
+
+    def __init__(self, temp_root: Path | None = None) -> None:
+        """Clone under ``temp_root``, or under the system temporary directory if None."""
+        self._temp_root = temp_root
+        self._path: Path | None = None
+        self._repo: Repo | None = None
+
+    @property
+    def path(self) -> Path | None:
+        """Return the clone directory, or None before clone() and after cleanup()."""
+        return self._path
+
+    def clone(self, source: RepositoryRef | Path) -> Path:
+        """Clone ``source`` into a new temporary directory and return that directory."""
+        if self._path is not None:
+            raise RuntimeError("this LocalRepository already holds a clone")
+        address = source.clone_url if isinstance(source, RepositoryRef) else str(source)
+        self._path = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX, dir=self._temp_root))
+        try:
+            self._repo = Repo.clone_from(address, self._path, env=CLONE_ENV)
+        except GitCommandError as exc:
+            self.cleanup()
+            raise TdeaError(
+                ErrorCode.CLONE_FAILED,
+                "Clone failed",
+                "Git could not copy the repository; the connection may have dropped.",
+                "Check the internet connection and try again.",
+            ) from exc
+        except BaseException:
+            self.cleanup()
+            raise
+        return self._path
+
+    def history(self) -> list[CommitInfo]:
+        """Return every commit reachable from HEAD, in git log order (FR-07)."""
+        if self._repo is None:
+            raise RuntimeError("clone() must succeed before history()")
+        try:
+            return [CommitInfo.from_commit(commit) for commit in self._repo.iter_commits("HEAD")]
+        except (GitCommandError, ValueError) as exc:
+            raise TdeaError(
+                ErrorCode.HISTORY_FAILED,
+                "Commit history unreadable",
+                "Git could not read the cloned repository's history.",
+                "Try the analysis again; if it fails again, the repository may be damaged.",
+            ) from exc
+
+    def cleanup(self) -> None:
+        """Delete the clone and everything in it; safe to call more than once (FR-10)."""
+        if self._repo is not None:
+            self._repo.close()
+            self._repo = None
+        if self._path is not None:
+            remove_tree(self._path)
+            self._path = None
+
+    def __enter__(self) -> LocalRepository:
+        """Return this repository; the clone is deleted when the block ends."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Delete the clone whether the block succeeded or raised."""
+        self.cleanup()
+
+
+def remove_tree(path: Path) -> None:
+    """Delete a directory tree, including read-only files (git marks objects read-only)."""
+    if not path.exists():
+        return
+    handler_kind = "onexc" if sys.version_info >= (3, 12) else "onerror"
+    options: dict[str, Callable[..., Any]] = {handler_kind: _clear_read_only}
+    shutil.rmtree(path, **options)
+
+
+def _clear_read_only(function: Callable[[str], Any], path: str, _error: Any) -> None:
+    """Make ``path`` writable and retry the failed removal (needed on Windows)."""
+    os.chmod(path, stat.S_IWRITE)
+    function(path)
