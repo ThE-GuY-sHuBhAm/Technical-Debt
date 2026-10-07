@@ -10,7 +10,7 @@ requires-python = ">=3.10,<3.13"
 dependencies = [
     "Flask>=3.0",
     "GitPython>=3.1,<4",
-    "SQLAlchemy>=2.0",
+    "SQLAlchemy>=2.0,<2.1",
     "reportlab>=4.0",
     "PyYAML>=6.0",
     # Research profile tools (FR-51, NFR-24). Pylint is pinned by the SRS. astroid and

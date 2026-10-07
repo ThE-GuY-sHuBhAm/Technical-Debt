@@ -58,13 +58,20 @@ def _repo(tmp_path: Path) -> Path:
         ("tests/research/test_re01.py", True),
         ("tdea/analyzer/research/rg1/tracking.py", True),
         ("fixtures/rg10/bundle.json", True),
+        ("docs/RG1/notes.md", True),
+        ("notes/rg10.md", True),
         ("tdea/api/cli.py", False),
         ("tdea/aggregator/lock.py", False),
         ("tests/product/test_rg2_like_name.py", False),
+        ("tests/fixtures/make_fx_rg1.py", False),
+        ("fixtures/rg100/bundle.json", False),
+        ("tools/rg1x.py", False),
+        ("tools/rg1_helpers.py", False),
+        ("fixtures/rg10_bundles/a.json", False),
     ],
 )
 def test_is_research_path(path: str, expected: bool) -> None:
-    """Research paths are named by a research, rg1 or rg10 component."""
+    """A component starting with research, or named exactly rg1 or rg10, is research."""
     assert guard.is_research_path(path) is expected
 
 
@@ -102,6 +109,16 @@ def test_research_subject(subject: str, is_research: bool) -> None:
 def test_product_commit_may_change_dashboard(repo: Path) -> None:
     """Product work on the dashboard passes."""
     _commit(repo, "product: new chart", {"dashboard/src/Chart.jsx": "// chart\n"})
+    assert guard.main(["--repo", str(repo)]) == guard.EXIT_PASS
+
+
+def test_unmatched_commit_is_a_product_commit(repo: Path) -> None:
+    """Without the prefix, rg1_ and rg100 paths do not make a commit research."""
+    _commit(repo, "tools and a dashboard tweak", {
+        "tools/rg1_helpers.py": "# helpers\n",
+        "fixtures/rg100/a.json": "{}\n",
+        "dashboard/src/Tweak.jsx": "// tweak\n",
+    })
     assert guard.main(["--repo", str(repo)]) == guard.EXIT_PASS
 
 

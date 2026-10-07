@@ -6,14 +6,21 @@ research commit adds, changes, deletes or renames a file under dashboard/.
 
 A commit counts as a research commit when either of these holds:
 
-* its subject starts with ``research:`` or ``research(<scope>):``;
-* it touches a research path: a path with a component whose name starts with
-  "research" (tdea/aggregator/research_job.py, tests/research/...) or is rg1 or rg10.
+* its subject starts with ``research:`` or ``research(<scope>):``, optionally with
+  ``!`` before the colon;
+* it touches a research path: a path with a component whose name, up to the first
+  dot, starts with "research" (tdea/aggregator/research_job.py, tests/research/...)
+  or is exactly rg1 or rg10. Names such as rg100, rg1x and rg1_helpers do not count.
 
-The second rule catches research work committed without the prefix; research code that
-lives outside such paths is caught only by the prefix. Merge commits are skipped,
-because each commit they bring in is checked on its own. Renames are split into a
-deletion and an addition, so moving a file out of dashboard/ is a change under it.
+Letter case is ignored in both rules. A commit that matches neither rule is a product
+commit and is not checked. The second rule catches research work committed without the
+prefix; research code that lives outside such paths is caught only by the prefix.
+This is an implementation convention (execution plan, section 6), not part of the
+frozen specification.
+
+Merge commits are skipped, because each commit they bring in is checked on its own.
+Renames are split into a deletion and an addition, so moving a file out of dashboard/
+is a change under it.
 
 The whole history reachable from HEAD is checked by default, so the result does not
 depend on how CI was triggered.
@@ -21,7 +28,6 @@ depend on how CI was triggered.
 Exit status: 0 no research commit changes dashboard/; 1 at least one does; 2 the
 history cannot be read (not a git repository, no commits, or a shallow clone).
 """
-
 from __future__ import annotations
 
 import argparse
@@ -34,7 +40,7 @@ from pathlib import Path, PurePosixPath
 
 DASHBOARD = "dashboard"
 _RESEARCH_SUBJECT = re.compile(r"^research(\([^)]*\))?!?:", re.IGNORECASE)
-_RESEARCH_COMPONENT = re.compile(r"^(research|rg10?(_|$))", re.IGNORECASE)
+_RESEARCH_NAMES = frozenset({"rg1", "rg10"})
 _RECORD = "\x1e"
 _FIELD = "\x1f"
 
@@ -57,11 +63,12 @@ class Commit:
 
 
 def is_research_path(path: str) -> bool:
-    """Return True if any component of ``path`` names research code or data."""
-    return any(
-        _RESEARCH_COMPONENT.match(part.split(".", 1)[0])
-        for part in PurePosixPath(path).parts
-    )
+    """Return True if a component's name starts with "research" or is rg1 or rg10."""
+    for part in PurePosixPath(path).parts:
+        name = part.split(".", 1)[0].lower()
+        if name.startswith("research") or name in _RESEARCH_NAMES:
+            return True
+    return False
 
 
 def is_dashboard_path(path: str, dashboard: str = DASHBOARD) -> bool:
