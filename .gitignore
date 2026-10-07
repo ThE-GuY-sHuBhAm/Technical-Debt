@@ -1,0 +1,21 @@
+# Virtual environments
+.venv*/
+.tdea/
+venv/
+
+# Build and install output
+build/
+dist/
+*.egg-info/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Coverage output (NFR-13 reports are produced in CI)
+.coverage
+.coverage.*
+coverage.json
+coverage.xml
+htmlcov/

@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tdea"
+version = "0.1.0"
+description = "Technical Debt Evolution Evaluator: web product and headless research engine"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "Flask>=3.0",
+    "GitPython>=3.1,<4",
+    "SQLAlchemy>=2.0",
+    "reportlab>=4.0",
+    "PyYAML>=6.0",
+    # Research profile tools (FR-51, NFR-24). Pylint is pinned by the SRS. astroid and
+    # radon are pinned exactly to the versions the first install resolved on Python 3.11
+    # (Task 1, CL-02); pylint 4.1.1 itself requires astroid >=4.3.2,<=4.4.
+    "pylint==4.1.1",
+    "astroid==4.3.3",
+    "radon==6.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "pydocstyle>=6.3",
+]
+
+[project.scripts]
+tdea = "tdea.api.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["tdea*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The CI gate scripts in tools/ are not part of the tdea package; their tests import
+# them from there.
+pythonpath = ["tools"]

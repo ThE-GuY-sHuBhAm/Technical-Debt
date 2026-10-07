@@ -1,0 +1,105 @@
+# TDEA continuous integration (execution plan, Day 1, Task 2).
+#
+# tests            NFR-21, NFR-22: product suite on Linux, macOS and Windows x Python
+#                  3.10-3.12. The RE suite (tests/research) needs Python 3.11 (NFR-24),
+#                  so it runs in the 3.11 cells only. Coverage is reported per package
+#                  (NFR-13); the 70% gate is switched on from Day 6.
+# quality          NFR-12 per-file Pylint >= 8.0 with the default configuration, all
+#                  files in one run as TC-134 does; NFR-15 pydocstyle.
+# dashboard-guard  Section 6: research commits change nothing under dashboard/.
+#
+# Runner images: ubuntu-22.04 is the version TC-143 names (GitHub retires it on
+# 17 Apr 2027). GitHub no longer offers macOS 13 or an x64 Windows 11 image, so
+# macos-15 and windows-2025 stand in; TC-143 itself still needs the manual runs.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  tests:
+    name: tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15, windows-2025]
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install tdea with the dev extra
+        run: python -m pip install -e ".[dev]"
+      - name: Check pins and record resolved versions (CL-02)
+        run: |
+          python -m pip check
+          python -m pip list --format=freeze
+      - name: Console script
+        run: tdea research --help
+      - name: Test suite with coverage
+        run: |
+          if [ "${{ matrix.python }}" = "3.11" ]; then
+            suite=()
+          else
+            suite=(--ignore=tests/research)
+          fi
+          python -m pytest "${suite[@]}" --cov=tdea --cov-report=term-missing \
+            --cov-report=json:coverage.json
+      - name: Coverage per package (NFR-13)
+        # From Day 6 add: --fail-under 70
+        run: python tools/coverage_by_package.py coverage.json
+
+  quality:
+    name: quality gates (Python ${{ matrix.python }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install tdea with the dev extra
+        run: python -m pip install -e ".[dev]"
+      - name: Pylint, default configuration, every file >= 8.0 (NFR-12)
+        run: python tools/check_pylint_scores.py --min-score 8.0
+      - name: pydocstyle (NFR-15)
+        run: python -m pydocstyle tdea tests tools
+
+  dashboard-guard:
+    name: research commits leave dashboard/ unchanged
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Check every commit reachable from HEAD
+        run: python tools/check_dashboard_paths.py
