@@ -38,4 +38,4 @@ include = ["tdea*"]
 testpaths = ["tests"]
 # The CI gate scripts in tools/ are not part of the tdea package; their tests import
 # them from there.
-pythonpath = ["tools"]
+pythonpath = ["tools", "tests/fixtures"]

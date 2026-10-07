@@ -27,6 +27,7 @@ class ErrorCode(Enum):
     GITHUB_ERROR = "github_error"
     CLONE_FAILED = "clone_failed"
     HISTORY_FAILED = "history_failed"
+    INVALID_SELECTION = "invalid_selection"
 
 
 class TdeaError(Exception):

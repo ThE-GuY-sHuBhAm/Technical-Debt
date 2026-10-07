@@ -9,6 +9,9 @@ GitHub repositories are cloned from their HTTPS address, built from the parsed o
 repository (execution plan, Task 3 decision 5), with no token (FR-04 uses the token for
 API requests only) and with git's credential prompts off, so a failure cannot hang. A
 local path can be cloned too; the tests use this.
+
+The address cloned from and the clone time (UTC, taken when the clone completes) are
+kept for the research history record (FR-49); the clock is replaceable for tests.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ import stat
 import sys
 import tempfile
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -36,16 +40,41 @@ TEMP_PREFIX = "tdea-clone-"
 class LocalRepository:
     """One full clone (all history, all branch references) in a temporary directory."""
 
-    def __init__(self, temp_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        temp_root: Path | None = None,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         """Clone under ``temp_root``, or under the system temporary directory if None."""
         self._temp_root = temp_root
+        self._clock = clock or _utc_now
         self._path: Path | None = None
         self._repo: Repo | None = None
+        self._source: str | None = None
+        self._cloned_at: datetime | None = None
 
     @property
     def path(self) -> Path | None:
         """Return the clone directory, or None before clone() and after cleanup()."""
         return self._path
+
+    @property
+    def source(self) -> str | None:
+        """Return the address the clone was made from, or None without a clone."""
+        return self._source
+
+    @property
+    def cloned_at(self) -> datetime | None:
+        """Return when the clone completed (UTC), or None without a clone."""
+        return self._cloned_at
+
+    @property
+    def repo(self) -> Repo:
+        """Return the GitPython repository of the clone."""
+        if self._repo is None:
+            raise RuntimeError("clone() must succeed before the repository is used")
+        return self._repo
 
     def clone(self, source: RepositoryRef | Path) -> Path:
         """Clone ``source`` into a new temporary directory and return that directory."""
@@ -55,6 +84,8 @@ class LocalRepository:
         self._path = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX, dir=self._temp_root))
         try:
             self._repo = Repo.clone_from(address, self._path, env=CLONE_ENV)
+            self._source = address
+            self._cloned_at = _as_utc(self._clock())
         except GitCommandError as exc:
             self.cleanup()
             raise TdeaError(
@@ -90,6 +121,8 @@ class LocalRepository:
         if self._path is not None:
             remove_tree(self._path)
             self._path = None
+        self._source = None
+        self._cloned_at = None
 
     def __enter__(self) -> LocalRepository:
         """Return this repository; the clone is deleted when the block ends."""
@@ -103,6 +136,18 @@ class LocalRepository:
     ) -> None:
         """Delete the clone whether the block succeeded or raised."""
         self.cleanup()
+
+
+def _utc_now() -> datetime:
+    """Return the current time in UTC."""
+    return datetime.now(timezone.utc)
+
+
+def _as_utc(moment: datetime) -> datetime:
+    """Return a timezone-aware time converted to UTC; refuse a naive one."""
+    if moment.tzinfo is None or moment.utcoffset() is None:
+        raise ValueError("the clock must return a timezone-aware time")
+    return moment.astimezone(timezone.utc)
 
 
 def remove_tree(path: Path) -> None:
