@@ -3,7 +3,7 @@
 Step 1 runs the history reader on a fresh clone; the tdea research run command that will
 drive it arrives on Day 6. Step 2 compares the commits with the frozen oracle,
 git log --first-parent --format="%H %P %aI %cI". Step 3 (trailers hold identity keys)
-needs FR-54 pseudonymisation and is marked expected-fail until Day 3. Step 4 reads the
+checks the message FR-54's Pseudonymiser stores (Day 3). Step 4 reads the
 clone time, HEAD and the selection. Step 5 (pinned HEAD and an earlier cut-off through
 the run command) belongs to Day 6; the reader's cut-off rule is covered in
 test_history_reader.py.
@@ -14,10 +14,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import make_fx_rg1
-import pytest
 from fixture_git import git_output
 from fx_rg1_clone import CLONE_TIME, ClonedFxRg1
 
+from tdea.analyzer.research.rg1.pseudonymiser import IdentityKind, Pseudonymiser
 from tdea.git_handler.commit_selector import CommitSelector, Window
 
 
@@ -58,12 +58,17 @@ def test_step2_timestamps_are_utc(cloned_fx_rg1: ClonedFxRg1) -> None:
     assert trailers.authored_at == datetime(2026, 2, 8, 21, 30, tzinfo=timezone.utc)
 
 
-@pytest.mark.xfail(strict=True, reason="RE-02 step 3 needs FR-54 identity keys (Day 3)")
-def test_step3_trailers_hold_keys(cloned_fx_rg1: ClonedFxRg1) -> None:
+def test_step3_trailers_hold_keys(
+    cloned_fx_rg1: ClonedFxRg1, pseudonymiser: Pseudonymiser
+) -> None:
     """The trailer commit's stored message carries identity keys, not raw identities."""
-    stored_message = cloned_fx_rg1.commit("trailers").raw.message  # Day 3: FR-54's rewrite
-    assert "noreply@anthropic.com" not in stored_message
-    assert make_fx_rg1.ASHA.email not in stored_message
+    stored_message = pseudonymiser.rewrite_message(cloned_fx_rg1.commit("trailers").raw.message)
+    for raw in ("noreply@anthropic.com", "Claude", make_fx_rg1.ASHA.email,
+                make_fx_rg1.ASHA.name):
+        assert raw not in stored_message
+    for email in (make_fx_rg1.ASHA.email, "noreply@anthropic.com"):
+        key = pseudonymiser.identity_key(email, IdentityKind.EMAIL)
+        assert f"Co-authored-by: id:{key}" in stored_message
 
 
 def test_step4_clone_time_and_head_recorded(cloned_fx_rg1: ClonedFxRg1) -> None:
@@ -94,3 +99,4 @@ def test_step4_only_listed_shas_are_selected(cloned_fx_rg1: ClonedFxRg1) -> None
                     commits=(shas["ai_author"], shas["trailers"]))
     selected = CommitSelector(cloned_fx_rg1.history.commits).select(window)
     assert [commit.sha for commit in selected] == [shas["trailers"], shas["ai_author"]]
+    

@@ -1,10 +1,11 @@
 """Deterministic git for the fixture builders (FX-RG1, FX-PAIRS, FX-S, FX-ERR).
 
-Every git call runs with no system configuration and a global configuration file that
-does not exist, so nothing on the machine can change the result. Each commit gets its
-identities and dates (with explicit UTC offsets) on the command line, files are written
-as exact bytes, and line-ending conversion and signing are off. The same builder call
-therefore gives the same commit SHAs on any machine, in any time zone, at any time.
+Every git call runs with no system configuration, a global configuration file that does
+not exist and no system or global attributes file, so nothing on the machine can change
+the result. Each commit gets its identities and dates (with explicit UTC offsets) on the
+command line, files are written as exact bytes, and line-ending conversion and signing
+are off. The same builder call therefore gives the same commit SHAs on any machine, in
+any time zone, at any time.
 """
 
 from __future__ import annotations
@@ -31,11 +32,17 @@ class Identity:
 
 
 def isolated_env(repo: Path) -> dict[str, str]:
-    """Return an environment in which git reads no system or global configuration."""
+    """Return an environment in which git reads no system or global configuration.
+
+    Global attributes are read from $XDG_CONFIG_HOME/git/attributes even without a global
+    configuration file, so XDG_CONFIG_HOME points to a folder that does not exist (Task 5).
+    """
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update({
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": str(repo / ".git" / "tdea-fixture-no-global-config"),
+        "GIT_ATTR_NOSYSTEM": "1",
+        "XDG_CONFIG_HOME": str(repo / ".git" / "tdea-fixture-no-xdg-config"),
         "GIT_TERMINAL_PROMPT": "0",
     })
     return env
