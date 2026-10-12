@@ -12,8 +12,15 @@ the whole chain, so positions do not depend on the cut-off. Merge commits are ke
 both parents and the merge flag (D-10). Commits are read from the object database;
 nothing is checked out and no network is used.
 
-Resuming from a recorded HEAD that a fresh clone lacks (exit 3, "history changed") is
-FR-48 run control, added with the run command on Day 6.
+The commits left out by the cut-off are also returned, with their positions and
+committer dates only (no identities), so a unit can count those in its window and
+tracking can stop where the cut-off falls (FR-49, FR-55).
+
+contains_commit() tells run control whether a fresh clone still holds a pinned or
+recorded HEAD; run control refuses with "history changed" (exit 3) when it does not
+(FR-49, Day 6). A commit SHA fixes its whole first-parent history, so a HEAD that is
+present gives the same history as before. research_diff_settings() reports the diff
+settings and tool versions before any clone exists, for the run record (FR-52).
 
 FR-50 (Day 3): read_blob() returns a file's exact bytes from the object database, and
 file_changes() returns a commit's file-change records against its first parent (the
@@ -33,6 +40,7 @@ the run metadata (FR-52).
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -50,6 +58,7 @@ from tdea.git_handler.local_repository import LocalRepository
 from tdea.git_handler.research_commit import RawCommitStrings, ResearchCommit
 
 _ORIGIN_HEAD = "refs/remotes/origin/HEAD"
+_FULL_SHA = re.compile(r"[0-9a-f]{40}")
 _ORIGIN_PREFIX = "refs/remotes/origin/"
 
 RENAME_THRESHOLD = 50  # percent; Git's default (D-11)
@@ -76,6 +85,15 @@ class CloneMetadata:
 
 
 @dataclass(frozen=True)
+class ExcludedCommit:
+    """A first-parent commit dated after the cut-off: left out, but counted (FR-49)."""
+
+    sha: str
+    position: int
+    committed_at: datetime
+
+
+@dataclass(frozen=True)
 class FirstParentHistory:
     """The commits of one first-parent history at or before a cut-off."""
 
@@ -83,6 +101,7 @@ class FirstParentHistory:
     cutoff: datetime
     commits: tuple[ResearchCommit, ...]
     excluded_after_cutoff: int
+    excluded: tuple[ExcludedCommit, ...] = ()
 
 
 class HistoryReader:
@@ -119,15 +138,25 @@ class HistoryReader:
         except (BadName, ValueError, GitCommandError) as exc:
             raise _history_error(f"{head!r} is not a commit in this clone.") from exc
         commits = []
-        excluded = 0
+        excluded = []
         for position, sha in enumerate(chain):
             commit = repo.commit(sha)
             committed_at = _utc(commit.committed_datetime)
             if committed_at > cutoff:
-                excluded += 1
+                excluded.append(ExcludedCommit(commit.hexsha, position, committed_at))
                 continue
             commits.append(_research_commit(commit, position, committed_at))
-        return FirstParentHistory(head_commit.hexsha, cutoff, tuple(commits), excluded)
+        return FirstParentHistory(head_commit.hexsha, cutoff, tuple(commits), len(excluded),
+                                  tuple(excluded))
+
+    def contains_commit(self, sha: str) -> bool:
+        """Return True if the full SHA ``sha`` names a commit in this clone's objects."""
+        if not isinstance(sha, str) or not _FULL_SHA.fullmatch(sha):
+            return False
+        try:
+            return self._local.repo.odb.info(hex_to_bin(sha)).type == b"commit"
+        except (BadObject, ValueError):
+            return False
 
     def read_blob(self, sha: str, path: str | None = None) -> bytes:
         """Return a file's exact bytes from the object database; nothing is checked out.
@@ -179,14 +208,7 @@ class HistoryReader:
 
     def diff_settings(self) -> dict[str, object]:
         """Return the fixed diff options and the git and GitPython versions (FR-50, FR-52)."""
-        return {
-            "rename_threshold_percent": RENAME_THRESHOLD,
-            "rename_limit": RENAME_LIMIT,
-            "diff_algorithm": DIFF_ALGORITHM,
-            "big_file_threshold": BIG_FILE_THRESHOLD,
-            "git_version": ".".join(str(part) for part in self._local.repo.git.version_info),
-            "gitpython_version": git.__version__,
-        }
+        return _settings(self._local.repo.git.version_info)
 
     def _diff_tree(self, *args: str) -> bytes:
         """Run git diff-tree with the fixed options in an environment free of git settings."""
@@ -198,6 +220,23 @@ class HistoryReader:
                    *_DIFF_OPTIONS, *args]
         return subprocess.run(command, cwd=repo.working_dir, env=_isolated_env(git_dir),
                               capture_output=True, check=True).stdout
+
+
+def research_diff_settings() -> dict[str, object]:
+    """Return diff_settings() without a clone, from the git that GitPython runs."""
+    return _settings(git.Git().version_info)
+
+
+def _settings(version_info: tuple[int, ...]) -> dict[str, object]:
+    """Return the fixed diff options with the given git version and GitPython's."""
+    return {
+        "rename_threshold_percent": RENAME_THRESHOLD,
+        "rename_limit": RENAME_LIMIT,
+        "diff_algorithm": DIFF_ALGORITHM,
+        "big_file_threshold": BIG_FILE_THRESHOLD,
+        "git_version": ".".join(str(part) for part in version_info),
+        "gitpython_version": git.__version__,
+    }
 
 
 def _isolated_env(git_dir: Path) -> dict[str, str]:

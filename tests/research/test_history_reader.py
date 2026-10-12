@@ -143,3 +143,22 @@ def test_reading_history_checks_nothing_out(cloned_fx_rg1: ClonedFxRg1) -> None:
     assert clone_git.status("--porcelain") == ""
     assert (path / "pkg" / "helpers.py").is_file()
     assert not (path / "pkg" / "util.py").exists()
+
+
+def test_contains_commit_needs_a_full_sha_of_a_commit_object(skewed) -> None:
+    """Day 6 (FR-49): only a full lowercase SHA of a commit in the clone counts as present."""
+    reader, shas = skewed
+    blob = reader.file_changes(shas[0])[0].new.blob
+    assert reader.contains_commit(shas[1])
+    for absent in ("0" * 40, "1" * 40, blob, shas[1][:10], shas[1].upper(), "", None):
+        assert not reader.contains_commit(absent)
+
+
+def test_commits_after_the_cutoff_are_returned_with_position_and_date(skewed) -> None:
+    """The commits left out by the cut-off keep their positions and dates, no identities."""
+    reader, shas = skewed
+    history = reader.first_parent(shas[2], datetime(2026, 2, 1, tzinfo=UTC))
+    (excluded,) = history.excluded
+    assert (excluded.sha, excluded.position, excluded.committed_at) == (
+        shas[1], 1, datetime(2026, 3, 1, tzinfo=UTC))
+    assert history.excluded_after_cutoff == len(history.excluded)

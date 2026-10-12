@@ -5,9 +5,10 @@ and aggregator as packages, research modules included, so this script adds the f
 figures up per package (the first directory under tdea/). Files directly under tdea/
 are listed as "tdea".
 
-The script only reports unless --fail-under is given. The execution plan switches the
-70% gate on from Day 6, once those packages hold real code; with the gate on, a
-required package with no statements also fails.
+The script only reports unless --fail-under is given. From Day 6 CI gives --fail-under
+70 in the Python 3.11 cells, which run the whole suite; the 3.10 and 3.12 cells skip the
+research tests (NFR-24) and report only, so no gate is claimed for them. With the gate
+on, a required package with no statements also fails.
 
 Exit status: 0 the report was printed and, with --fail-under, every required package
 meets it; 1 a required package is below the threshold or has no statements; 2 the
@@ -103,7 +104,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"  {label:<18} {package.covered:>5}/{package.statements:<5} {shown}")
 
     if args.fail_under is None:
-        print("Gate off: report only (the plan applies the 70% gate from Day 6).")
+        print("Gate off: report only; no coverage requirement is checked in this run.")
         return EXIT_PASS
     failing = [
         name for name in args.require

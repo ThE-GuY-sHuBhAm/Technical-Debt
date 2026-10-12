@@ -5,8 +5,8 @@ real command line in process. "Before any clone" is made concrete: every operati
 could clone, reach GitHub, or create the key file, the research store, the lint cache or
 any other file is replaced by a tripwire for the test, and the home and working folders
 stay empty. The network guard of tests/conftest.py refuses every external host anyway.
-These checks need no Pylint, so they run in every CI cell. The other RE-01 steps need
-the run command (Day 6).
+These checks need no Pylint, so they run in every CI cell. The other RE-01 steps are in
+test_re01_refusals.py and tests/research/test_re01_run.py (Day 6).
 """
 
 from __future__ import annotations
@@ -126,20 +126,22 @@ def test_a_missing_run_file_is_invalid_input(
 
 @pytest.mark.parametrize("argv", [["research", "validate"],
                                   ["research", "validate", "a.yaml", "b.yaml"],
-                                  ["research", "run", "a.yaml"]])
-def test_usage_errors_exit_1_and_later_commands_do_not_exist(
+                                  ["research", "run"], ["research", "status"],
+                                  ["research", "run", "a.yaml", "--token", "x"],
+                                  ["research", "export", "a.yaml"]])
+def test_usage_errors_exit_1_and_export_does_not_exist(
     argv: list[str], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A malformed command line is invalid input; run is not part of Day 5."""
+    """A malformed command line is invalid input; export is not part of Day 6 (FR-62)."""
     assert main(argv) == EXIT_INVALID_INPUT
     assert "error:" in capsys.readouterr().err
 
 
-def test_help_lists_validate_only(capsys: pytest.CaptureFixture[str]) -> None:
-    """tdea research --help names validate; run, status and export are not offered yet."""
+def test_help_lists_validate_run_and_status(capsys: pytest.CaptureFixture[str]) -> None:
+    """tdea research --help names validate, run and status; export is not offered yet."""
     assert main(["research", "--help"]) == EXIT_OK
     out = capsys.readouterr().out
     assert "validate" in out and "check a run file without side effects" in out
+    assert "run" in out and "status" in out and "export command is not part" in out
     assert main(["research"]) == EXIT_OK
     assert main([]) == EXIT_OK
-    

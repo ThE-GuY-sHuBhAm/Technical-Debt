@@ -66,6 +66,15 @@ class FixtureRepo:
         self.path.mkdir(parents=True, exist_ok=False)
         self.git("init", "-q")
 
+    @classmethod
+    def existing(cls, path: Path) -> FixtureRepo:
+        """Return a FixtureRepo for a repository a builder already made at ``path``."""
+        repo = cls.__new__(cls)
+        repo.path = Path(path)
+        if not (repo.path / ".git").is_dir():
+            raise ValueError(f"{path} is not a fixture repository")
+        return repo
+
     def git(self, *args: str, env: dict[str, str] | None = None) -> str:
         """Run git in the repository with isolated configuration and return its output."""
         completed = subprocess.run(

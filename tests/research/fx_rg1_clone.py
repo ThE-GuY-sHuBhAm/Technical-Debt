@@ -1,4 +1,4 @@
-"""A clone of FX-RG1 and its first-parent history, shared by the research tests."""
+"""Clones of FX-RG1 v1 and v2 and their first-parent histories, shared by the research tests."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import make_fx_rg1
+import make_fx_rg1_v2
 
 from tdea.git_handler.history_reader import CloneMetadata, FirstParentHistory, HistoryReader
 from tdea.git_handler.local_repository import LocalRepository
@@ -41,3 +42,30 @@ def clone_fx_rg1(fixture: make_fx_rg1.FxRg1, temp_root: Path) -> Iterator[Cloned
         metadata = reader.clone_metadata()
         history = reader.first_parent(metadata.head_sha, metadata.cloned_at)
         yield ClonedFxRg1(fixture, local, metadata, history)
+
+
+@dataclass(frozen=True)
+class ClonedFxRg1V2:
+    """FX-RG1 v2, a clone of it and its history up to the RE-10 cut-off."""
+
+    fixture: make_fx_rg1_v2.FxRg1V2
+    local: LocalRepository
+    reader: HistoryReader
+    metadata: CloneMetadata
+    history: FirstParentHistory
+
+    def commit(self, label: str) -> ResearchCommit:
+        """Return the history's commit for a fixture label."""
+        sha = self.fixture.shas[label]
+        return next(commit for commit in self.history.commits if commit.sha == sha)
+
+
+@contextmanager
+def clone_fx_rg1_v2(fixture: make_fx_rg1_v2.FxRg1V2, temp_root: Path) -> Iterator[ClonedFxRg1V2]:
+    """Clone FX-RG1 v2 at its clone time and read its history up to its cut-off."""
+    with LocalRepository(temp_root, clock=lambda: make_fx_rg1_v2.CLONE_TIME) as local:
+        local.clone(fixture.path)
+        reader = HistoryReader(local)
+        metadata = reader.clone_metadata()
+        history = reader.first_parent(metadata.head_sha, make_fx_rg1_v2.CUTOFF)
+        yield ClonedFxRg1V2(fixture, local, reader, metadata, history)

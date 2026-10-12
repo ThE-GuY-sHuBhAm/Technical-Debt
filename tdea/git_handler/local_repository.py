@@ -12,6 +12,11 @@ local path can be cloned too; the tests use this.
 
 The address cloned from and the clone time (UTC, taken when the clone completes) are
 kept for the research history record (FR-49); the clock is replaceable for tests.
+
+A process that is killed cannot delete its own clone. remove_stale_clones() deletes such
+leftovers from a clone folder that only one analysis at a time uses; research runs call
+it on their own folder while they hold the single-analysis lock (Day 6). The product's
+clones in the system temporary directory are not touched.
 """
 
 from __future__ import annotations
@@ -148,6 +153,30 @@ def _as_utc(moment: datetime) -> datetime:
     if moment.tzinfo is None or moment.utcoffset() is None:
         raise ValueError("the clock must return a timezone-aware time")
     return moment.astimezone(timezone.utc)
+
+
+def remove_stale_clones(folder: Path) -> int:
+    """Delete the clones a killed process left in ``folder``; return how many (FR-10).
+
+    Only entries named like a LocalRepository clone (``tdea-clone-*``) are removed; anything
+    else in the folder is left alone. A link is unlinked, never followed, and a folder that
+    is itself a link is refused (NotADirectoryError), so the clean-up cannot be redirected.
+    The caller must hold the single-analysis lock, so no clone in the folder can still be
+    in use. The folder is created when missing.
+    """
+    folder = Path(folder)
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = os.lstat(folder)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise NotADirectoryError(f"{folder} is not a plain folder")
+    removed = 0
+    for entry in sorted(folder.glob(f"{TEMP_PREFIX}*")):
+        if entry.is_symlink() or not entry.is_dir():
+            entry.unlink()
+        else:
+            remove_tree(entry)
+        removed += 1
+    return removed
 
 
 def remove_tree(path: Path) -> None:

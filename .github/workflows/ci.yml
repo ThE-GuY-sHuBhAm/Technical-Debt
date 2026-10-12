@@ -3,7 +3,9 @@
 # tests            NFR-21, NFR-22: product suite on Linux, macOS and Windows x Python
 #                  3.10-3.12. The RE suite (tests/research) needs Python 3.11 (NFR-24),
 #                  so it runs in the 3.11 cells only. Coverage is reported per package
-#                  (NFR-13); the 70% gate is switched on from Day 6.
+#                  (NFR-13). From Day 6 the 70% gate applies in the 3.11 cells, which run
+#                  the whole suite; the 3.10 and 3.12 cells skip tests/research, so their
+#                  figures are reported only and the gate is not claimed for them.
 # quality          NFR-12 per-file Pylint >= 8.0 with the default configuration, all
 #                  files in one run as TC-134 does; NFR-15 pydocstyle.
 # dashboard-guard  Section 6: research commits change nothing under dashboard/.
@@ -67,8 +69,12 @@ jobs:
           python -m pytest "${suite[@]}" --cov=tdea --cov-report=term-missing \
             --cov-report=json:coverage.json
       - name: Coverage per package (NFR-13)
-        # From Day 6 add: --fail-under 70
-        run: python tools/coverage_by_package.py coverage.json
+        run: |
+          if [ "${{ matrix.python }}" = "3.11" ]; then
+            python tools/coverage_by_package.py coverage.json --fail-under 70
+          else
+            python tools/coverage_by_package.py coverage.json
+          fi
 
   quality:
     name: quality gates (Python ${{ matrix.python }})
