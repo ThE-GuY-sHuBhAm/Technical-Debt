@@ -2,18 +2,17 @@
 
 Steps 1-2 (Python 3.12, another Pylint or astroid version: exit 3 naming the expected
 versions) use injected environment facts; step 3 accepts the running interpreter's real
-tool versions. Step 4 compares every message with the Pylint CLI, run separately here as
-RE-04 states it: ``pylint --rcfile=<empty> --disable=<list> --output-format=json`` on one
-file in an empty folder. The profile hash is checked against a SHA-256 built here from
-the frozen FR-51 text, not from the implementation. CL-04: E0402 stays enabled.
+tool versions. Step 4 compares every message with the Pylint CLI, run separately as RE-04
+states it (pylint_reference): ``pylint --rcfile=<empty> --disable=<list>
+--output-format=json`` on one file in an empty folder. In-file pragmas act as in the CLI.
+The profile hash is checked against a SHA-256 built here from the frozen FR-51 text, not
+from the implementation. CL-04: E0402 stays enabled.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import os
-import subprocess
 import sys
 import tempfile
 from dataclasses import fields, replace
@@ -22,16 +21,14 @@ from pathlib import Path
 import make_fx_pairs
 import make_fx_product
 import pytest
+from pylint_reference import FROZEN_DISABLE, cli_messages
 
 from tdea.analyzer.research import profile as profile_module
 from tdea.analyzer.research.profile import (
     DECODE_ERROR, DISABLED_MESSAGES, FAILED, OK, SYNTAX_ERROR, TIME_OUT, EnvironmentFacts,
     EnvironmentRefused, ResearchProfile, canonical_profile, hash_profile)
+from tdea.analyzer.research.rg1.scopes import ScopeResolver
 
-# FR-51 (a), expanded by hand: C0103, C0114-C0116, C0301, C0303-C0305, C0411-C0415, E0401,
-# E0611 and R0801.
-FROZEN_DISABLE = ["C0103", "C0114", "C0115", "C0116", "C0301", "C0303", "C0304", "C0305",
-                  "C0411", "C0412", "C0413", "C0414", "C0415", "E0401", "E0611", "R0801"]
 FROZEN_PROFILE = {"interpreter": "3.11", "pylint": "4.1.1", "astroid": "4.3.3",
                   "radon": "6.0.1", "rcfile": "", "disable": FROZEN_DISABLE,
                   "enabled_extras": []}
@@ -53,24 +50,6 @@ BUSY = (
     "        return None\n"
 )
 ON_311 = sys.version_info[:2] == (3, 11)
-
-
-def cli_messages(name: str, content: bytes, folder: Path) -> list[dict]:
-    """Run the Pylint CLI exactly as RE-04 step 4 states it, on one file in ``folder``.
-
-    Pylint's stats file goes to a PYLINTHOME beside ``folder`` so the test never writes
-    to the developer's home; that setting does not change the messages.
-    """
-    folder.mkdir()
-    (folder / name).write_bytes(content)
-    rcfile = folder.parent / f"{folder.name}.empty-rc"
-    rcfile.write_text("", encoding="utf-8")
-    completed = subprocess.run(
-        [sys.executable, "-m", "pylint", f"--rcfile={rcfile}",
-         f"--disable={','.join(FROZEN_DISABLE)}", "--output-format=json", name],
-        cwd=folder, capture_output=True, check=False,
-        env=dict(os.environ, PYLINTHOME=str(folder.parent / f"{folder.name}.pylinthome")))
-    return json.loads(completed.stdout.decode("utf-8"))
 
 
 class MemoryCache:
@@ -184,20 +163,29 @@ def test_e0402_stays_enabled_cl04(profile: ResearchProfile) -> None:
 def test_step4_messages_equal_the_pylint_cli(
     profile: ResearchProfile, tmp_path: Path, name: str, content: bytes
 ) -> None:
-    """Every message, and its scope, equals the CLI's under the same options."""
+    """Every message equals the CLI's under the same options, scope included.
+
+    The scope is Pylint's own wherever Pylint names one; a message Pylint attaches to no
+    node takes the enclosing scope of its line (test_re05_scopes checks both rules).
+    """
     expected = cli_messages(name, content, tmp_path / "cli")
     result = profile.lint(content, name)
+    resolver = ScopeResolver(content)
     assert result.status == OK and expected
     assert [(m.symbol, m.message_id, m.category, m.message, m.line, m.scope)
             for m in result.messages] == [
-        (e["symbol"], e["message-id"], e["type"], e["message"], e["line"], e["obj"])
-        for e in expected]
+        (e["symbol"], e["message-id"], e["type"], e["message"], e["line"],
+         e["obj"] or resolver.scope_at(e["line"])) for e in expected]
 
 
 def test_disabled_ids_never_appear_despite_a_project_pylintrc(
     profile: ResearchProfile, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A pylintrc enabling C0103 and C0301, in the project, PYLINTRC or HOME, has no effect."""
+    """A pylintrc enabling C0103 and C0301, in the project, PYLINTRC or HOME, has no effect.
+
+    This is the configuration half of "disabled IDs never appear"; a pragma inside the
+    linted file acts as in the CLI (test_in_file_pragmas_act_as_in_the_cli).
+    """
     hostile = "[MAIN]\nload-plugins=no_such_plugin\n[MESSAGES CONTROL]\nenable=C0103,C0301\n"
     project = tmp_path / "project"
     project.mkdir()
@@ -211,6 +199,43 @@ def test_disabled_ids_never_appear_despite_a_project_pylintrc(
     result = profile.lint(make_fx_pairs.SMELL_PROFILE.encode(), "smell_profile.py")
     assert result.status == OK
     assert [m.message_id for m in result.messages] == ["W0611"]
+
+
+PRAGMAS = {  # name -> (file content, expected (message ID, line) list, as the CLI gives it)
+    "enable-on-a-line": ('"""Doc."""\nimport os\n\nbadName = 1  # pylint: enable=invalid-name\n'
+                         'alsoBad = 2\n', [("C0103", 4), ("W0611", 2)]),
+    "enable-for-the-rest": ('"""Doc."""\n# pylint: enable=invalid-name,line-too-long\n'
+                            'badName = 1\nX = "' + "x" * 120 + '"\n',
+                            [("C0301", 4), ("C0103", 3)]),
+    "enable-then-disable": ('"""Doc."""\n# pylint: enable=invalid-name\nbadName = 1\n'
+                            '# pylint: disable=invalid-name\nalsoBad = 2\n', [("C0103", 3)]),
+    "disable-on-a-line": ('"""Doc."""\nimport os  # pylint: disable=unused-import\n'
+                          'import sys\n', [("W0611", 3)]),
+    "disable-all": ('"""Doc."""\n# pylint: disable=all\nimport os\n', []),
+    "skip-file": ('"""Doc."""\n# pylint: skip-file\nimport os\n', []),
+    "unknown-message": ('"""Doc."""\n# pylint: disable=no-such-message\nimport os\n',
+                        [("W0012", 2), ("W0611", 3)]),
+}
+
+
+@pytest.mark.parametrize("name", sorted(PRAGMAS))
+def test_in_file_pragmas_act_as_in_the_cli(
+    profile: ResearchProfile, tmp_path: Path, name: str
+) -> None:
+    """A pragma in the linted file is honoured exactly as the CLI honours it (Task 6 closure).
+
+    ``enable`` can bring back a message of the frozen disable list (C0103, C0301) for the
+    lines it covers, ``disable`` suppresses, and ``disable=all`` or ``skip-file`` leaves an
+    ok result with no messages. The disable list itself is unchanged; what the profile
+    guarantees is that no configuration outside the file enables a disabled message.
+    """
+    content, expected = PRAGMAS[name]
+    result = profile.lint(content.encode(), "mod.py")
+    cli = cli_messages("mod.py", content.encode(), tmp_path / "cli")
+    assert result.status == OK
+    assert [(m.message_id, m.line) for m in result.messages] == expected
+    assert [(e["message-id"], e["line"]) for e in cli] == expected
+    assert list(DISABLED_MESSAGES) == FROZEN_DISABLE
 
 
 def test_pythonpath_is_cleared_and_the_interpreter_isolated(

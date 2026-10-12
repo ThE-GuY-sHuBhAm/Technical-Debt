@@ -192,27 +192,133 @@ def test_trace_status_may_be_unclassified_but_never_human(tmp_path: Path) -> Non
                 session.get(rm.Commit, 1).trace_status = "human"
 
 
-def test_rg10_keys_are_scoped_by_bundle(tmp_path: Path) -> None:
-    """Two bundles may both have task-1; one bundle may not have it twice."""
+def a_task(bundle_id: int, task_id: str) -> rm.Task:
+    """Return a task row of a bundle (test data)."""
+    return rm.Task(bundle_id=bundle_id, task_id=task_id, project="p", target_module="m.py",
+                   marker="# M", function_names="[]", hidden_test_ids="[]",
+                   project_test_ids="[]")
+
+
+def an_output(bundle_id: int, gen_id: str, task_id: str, variant_id: int) -> rm.Output:
+    """Return an output row of a bundle (test data)."""
+    return rm.Output(bundle_id=bundle_id, gen_id=gen_id, task_id=task_id,
+                     variant_id=variant_id, replicate=1, run_order=1, prompt_file="p.txt",
+                     output_file="o.txt")
+
+
+# Rows that belong to one output (bundle_id, gen_id) or one task (bundle_id, task_id).
+OUTPUT_CHILDREN = {
+    "execution": lambda b, g: rm.Execution(
+        bundle_id=b, gen_id=g, module_sha256="m", tree_sha256="t", python_version="3.11.9",
+        import_status="ok", prepare_module_version="1"),
+    "test_result": lambda b, g: rm.TestResult(
+        bundle_id=b, gen_id=g, suite="hidden", test_id="t1", outcome="pass", source="harness"),
+    "detection": lambda b, g: rm.Detection(
+        bundle_id=b, gen_id=g, symbol="invalid-name", message_id="C0103", line=1,
+        message="m", on_added_line=True),
+    "symbol_count": lambda b, g: rm.SymbolCount(
+        bundle_id=b, gen_id=g, symbol="invalid-name", count=1),
+    "type_count": lambda b, g: rm.TypeCount(
+        bundle_id=b, gen_id=g, smell_type="C0103", count=1, declared_opportunities=1,
+        is_target=True, rate=1.0),
+}
+TASK_CHILDREN = {
+    "declared_opportunity": lambda b, t: rm.DeclaredOpportunity(
+        bundle_id=b, task_id=t, smell_type="C0103", declared_count=1),
+    "output": lambda b, t: an_output(b, "gen-new", t, b),
+}
+
+
+@pytest.fixture(name="rg10")
+def _rg10(tmp_path: Path) -> ResearchStore:
+    """Return a store with bundles 1 and 2, each with variant N, task-1 and gen-1.
+
+    Bundle 1 also has task-only-1 and gen-only-1, which bundle 2 must not reach.
+    """
     with ResearchStore(tmp_path / "research.db") as store:
         with store.transaction() as session:
             for number in (1, 2):
                 run_id = f"rg10-run-{number}"
                 session.add(a_run(run_id))
                 session.flush()
-                session.add(rm.Bundle(run_id=run_id, path="b", schema_version="1",
-                                      harness_version="1", prepare_module_version="1",
-                                      env_fingerprint="{}", smell_mapping="{}",
-                                      content_hash="h"))
+                session.add(rm.Bundle(bundle_id=number, run_id=run_id, path="b",
+                                      schema_version="1", harness_version="1",
+                                      prepare_module_version="1", env_fingerprint="{}",
+                                      smell_mapping="{}", content_hash="h"))
                 session.flush()
-                session.add(rm.Task(bundle_id=number, task_id="task-1", project="p",
-                                    target_module="m.py", marker="# M", function_names="[]",
-                                    hidden_test_ids="[]", project_test_ids="[]"))
+                session.add(rm.Variant(variant_id=number, bundle_id=number, smell="C0103",
+                                       condition="control", project="p", file_hashes="{}"))
+                session.add(a_task(number, "task-1"))
+                session.flush()
+                session.add(an_output(number, "gen-1", "task-1", number))
+            session.add(a_task(1, "task-only-1"))
+            session.flush()
+            session.add(an_output(1, "gen-only-1", "task-only-1", 1))
+        yield store
+
+
+def test_rg10_task_and_gen_ids_are_scoped_by_bundle(rg10: ResearchStore) -> None:
+    """Both bundles hold task-1 and gen-1; neither bundle may hold either twice."""
+    with rg10.reader() as session:
+        assert session.get(rm.Task, (1, "task-1")) and session.get(rm.Task, (2, "task-1"))
+        assert session.get(rm.Output, (1, "gen-1")) and session.get(rm.Output, (2, "gen-1"))
+    for row in (a_task(1, "task-1"), an_output(1, "gen-1", "task-1", 1)):
         with pytest.raises(IntegrityError):
-            with store.transaction() as session:
-                session.add(rm.Task(bundle_id=1, task_id="task-1", project="p",
-                                    target_module="m.py", marker="# M", function_names="[]",
-                                    hidden_test_ids="[]", project_test_ids="[]"))
+            with rg10.transaction() as session:
+                session.add(row)
+
+
+@pytest.mark.parametrize("child", sorted(OUTPUT_CHILDREN))
+def test_output_records_must_name_an_output_of_their_own_bundle(
+    rg10: ResearchStore, child: str
+) -> None:
+    """An execution, test result, detection or count for gen-only-1 in bundle 2 is refused."""
+    with pytest.raises(IntegrityError):
+        with rg10.transaction() as session:
+            session.add(OUTPUT_CHILDREN[child](2, "gen-only-1"))
+    with rg10.transaction() as session:
+        session.add(OUTPUT_CHILDREN[child](1, "gen-only-1"))
+
+
+@pytest.mark.parametrize("child", sorted(TASK_CHILDREN))
+def test_task_records_must_name_a_task_of_their_own_bundle(
+    rg10: ResearchStore, child: str
+) -> None:
+    """A declared opportunity or output for task-only-1 in bundle 2 is refused."""
+    with pytest.raises(IntegrityError):
+        with rg10.transaction() as session:
+            session.add(TASK_CHILDREN[child](2, "task-only-1"))
+    with rg10.transaction() as session:
+        session.add(TASK_CHILDREN[child](1, "task-only-1"))
+
+
+def test_an_output_variant_must_belong_to_its_bundle(rg10: ResearchStore) -> None:
+    """An output of bundle 2 cannot use bundle 1's variant."""
+    with pytest.raises(IntegrityError):
+        with rg10.transaction() as session:
+            session.add(an_output(2, "gen-2", "task-1", 1))
+    with rg10.transaction() as session:
+        session.add(an_output(2, "gen-2", "task-1", 2))
+
+
+@pytest.mark.parametrize("child", sorted(OUTPUT_CHILDREN))
+def test_per_output_records_keep_their_appendix_c_uniqueness(
+    rg10: ResearchStore, child: str
+) -> None:
+    """Each per-output record keeps its Appendix C key within the output.
+
+    One execution per output; one test result per suite and test ID; one count per symbol
+    or smell type; detections are separate rows with their own key.
+    """
+    with rg10.transaction() as session:
+        session.add(OUTPUT_CHILDREN[child](1, "gen-1"))
+    if child == "detection":
+        with rg10.transaction() as session:
+            session.add(OUTPUT_CHILDREN[child](1, "gen-1"))
+        return
+    with pytest.raises(IntegrityError):
+        with rg10.transaction() as session:
+            session.add(OUTPUT_CHILDREN[child](1, "gen-1"))
 
 
 def test_every_fr52_metadata_field_has_a_column(tmp_path: Path) -> None:

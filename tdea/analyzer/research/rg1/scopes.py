@@ -7,6 +7,11 @@ module level, written as the empty string, as Pylint itself writes it (Task 6 de
 decorators are evaluated in the enclosing scope, so they belong to it. The source is
 parsed with Python's ast module from bytes, so a PEP 263 coding line is honoured as it is
 by Pylint. Nothing is imported or run (NFR-26).
+
+The resolver works by line, so it does not name lambdas: a lambda shares its line with the
+code around it, and only Pylint's node-level scope can tell them apart. The research
+profile therefore takes a message's scope from Pylint (``outer.<lambda>`` included) and uses
+this resolver only for messages Pylint attaches to no node.
 """
 
 from __future__ import annotations

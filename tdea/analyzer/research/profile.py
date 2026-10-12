@@ -25,19 +25,36 @@ temporary folder, as ``sys.executable -I -m pylint --rcfile=<empty> --disable=<l
 --output-format=json --persistent=n <file>``, with PYTHONPATH and PYLINTRC removed,
 PYLINTHOME inside the temporary folder (so Pylint writes nothing elsewhere) and a 120 s
 limit. It is the research engine's only process (the no-execution guard's one exception).
-Content that does not decode as Python source (PEP 263: BOM, coding line, else UTF-8) fails
-with reason decode error and is not given to Pylint, wherever the bad byte is.
+
+A file fails to lint (FR-51 e) with one of four fixed reasons, never Pylint's own text,
+which can contain the temporary folder's path: decode error when the content does not
+decode as Python source (PEP 263: BOM, coding line, else UTF-8; decided before Pylint
+runs, wherever the bad byte is); syntax error when it decodes but does not parse; pylint
+crash for any other fatal message, a usage error, a signal or unreadable output; time-out
+past the limit. A failed file keeps no messages.
+
 Each message gives one record: symbol, message ID, category (Pylint's type), message text,
-line and scope (ScopeResolver). A file fails to lint on a syntax error (E0001), a decode
-error (F0010 about the encoding), any other fatal message or Pylint crash, or the time
-limit; its messages are then not kept, and the reason is one of FR-51 (e)'s four words,
-because Pylint's own text can contain the temporary folder's path. Results pass through
-the LintCachePort the aggregator implements (NFR-25); a cache hit is returned as stored.
-The cache is used only after check_environment() has accepted the environment and with the
-frozen 120 s limit, so every stored result is one the pinned profile produced (a hit equals
-a fresh lint). A failure to start Pylint at all (OSError) is an environment problem and is
-raised, never stored as the file's result.
-Nothing here imports or runs the linted file.
+line and scope. The scope is Pylint's own scope name for the node the message is attached
+to, so a message inside a lambda keeps Pylint's ``outer.<lambda>`` (Task 6 closure). Pylint
+writes no scope for a message it attaches to no node (fixme, bad-indentation,
+superfluous-parens, too-many-lines and the like), even inside a function; such a message
+takes the enclosing class or function of its line (ScopeResolver, FR-51 c), which is the
+empty string at module level. That second rule is an open question for the RM.
+
+In-file pragmas behave as in the Pylint CLI: a ``# pylint: disable=...`` comment in the
+linted file suppresses messages, ``disable=all`` or ``skip-file`` leaves an ok result with
+no messages, and a ``# pylint: enable=...`` comment can bring back a message of the frozen
+disable list for the lines it covers. The profile guarantees only that no configuration
+outside the file (a project pylintrc, PYLINTRC, HOME or the current folder) enables a
+disabled message; it does not filter what the file itself asks for, and the disable list
+is unchanged (Task 6 closure).
+
+Results pass through the LintCachePort the aggregator implements (NFR-25); a cache hit is
+returned as stored. The cache is used only after check_environment() has accepted the
+environment and with the frozen 120 s limit, so every stored result is one the pinned
+profile produced (a hit equals a fresh lint). A failure to start Pylint at all (OSError)
+is an environment problem and is raised, never stored as the file's result. Nothing here
+imports or runs the linted file.
 """
 
 from __future__ import annotations
@@ -302,6 +319,7 @@ def _interpret(returncode: int, stdout: bytes, content: bytes) -> LintResult:
         raw = json.loads(stdout.decode("utf-8")) if stdout.strip() else []
         reason = _failure_reason(raw)
         lines = [int(item["line"]) for item in raw]
+        pylint_scopes = [str(item["obj"] or "") for item in raw]
     except (ValueError, KeyError, TypeError):  # undecodable or unexpected output
         return LintResult(FAILED, PYLINT_CRASH, ())
     if reason is None and returncode & _FATAL_BIT:
@@ -314,8 +332,8 @@ def _interpret(returncode: int, stdout: bytes, content: bytes) -> LintResult:
         return LintResult(FAILED, SYNTAX_ERROR, ())
     return LintResult(OK, None, tuple(
         LintMessage(str(item["symbol"]), str(item["message-id"]), str(item["type"]),
-                    str(item["message"]), line, scopes.scope_at(line))
-        for item, line in zip(raw, lines)))
+                    str(item["message"]), line, pylint_scope or scopes.scope_at(line))
+        for item, line, pylint_scope in zip(raw, lines, pylint_scopes)))
 
 
 def _failure_reason(raw: list[dict[str, object]]) -> str | None:

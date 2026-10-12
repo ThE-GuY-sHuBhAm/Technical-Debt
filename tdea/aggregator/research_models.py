@@ -12,7 +12,9 @@ Two interpretations, recorded in the Task 6 report:
 
 * RG10 keys from the bundle (task_id, gen_id) are scoped by their bundle, so the keys are
   (bundle_id, task_id) and (bundle_id, gen_id): one research.db can hold several runs,
-  and every record reaches its run through one parent chain.
+  and every record reaches its run through one parent chain. Composite foreign keys keep
+  each chain inside one bundle: an output's task and variant, a declared opportunity's
+  task, and an execution's, test result's, detection's or count's output.
 * commit.trace_status may be NULL, meaning not classified, while CL-03 cannot classify
   (Task 6 decision 4). NULL is never read as non_traced; once CL-03 is final, research
   runs classify before they store (FR-54).
@@ -328,6 +330,9 @@ class Variant(ResearchBase):
     """One condition variant of a bundle (FR-58)."""
 
     __tablename__ = "variant"
+    # (bundle_id, variant_id) is unique because variant_id is; naming it lets an output's
+    # variant be required to belong to the output's own bundle.
+    __table_args__ = (UniqueConstraint("bundle_id", "variant_id", name="uq_variant_bundle"),)
 
     variant_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     bundle_id: Mapped[int] = mapped_column(ForeignKey("bundle.bundle_id"))
@@ -367,16 +372,22 @@ class DeclaredOpportunity(ResearchBase):
 
 
 class Output(ResearchBase):
-    """One model output and its extraction, static and insertability results (FR-59)."""
+    """One model output and its extraction, static and insertability results (FR-59).
+
+    gen_id is unique within its bundle; the output's task and variant must belong to the
+    same bundle (composite foreign keys).
+    """
 
     __tablename__ = "output"
     __table_args__ = (ForeignKeyConstraint(["bundle_id", "task_id"],
-                                           ["task.bundle_id", "task.task_id"]),)
+                                           ["task.bundle_id", "task.task_id"]),
+                      ForeignKeyConstraint(["bundle_id", "variant_id"],
+                                           ["variant.bundle_id", "variant.variant_id"]))
 
     bundle_id: Mapped[int] = mapped_column(ForeignKey("bundle.bundle_id"), primary_key=True)
     gen_id: Mapped[str] = mapped_column(String, primary_key=True)
     task_id: Mapped[str] = mapped_column(String)
-    variant_id: Mapped[int] = mapped_column(ForeignKey("variant.variant_id"))
+    variant_id: Mapped[int] = mapped_column(Integer)
     replicate: Mapped[int] = mapped_column(Integer)
     run_order: Mapped[int] = mapped_column(Integer)
     prompt_file: Mapped[str] = mapped_column(String)
