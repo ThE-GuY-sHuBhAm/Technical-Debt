@@ -2,11 +2,13 @@
 
 SYNTHETIC — not CL-03. A real run is refused while CL-03 is incomplete (Day 6 decision
 1), so the run mechanics are exercised with test doubles that decide nothing CL-03
-decides: SyntheticClassifier labels commits the test names one by one (by subject line)
-and calls every other commit non-traced; SyntheticPackages treats exactly the paths a
-test lists as package code. Neither uses a pattern, an identifier from CL-03 or any
-matching rule, and both report list names starting "SYNTHETIC — not CL-03", which the
-run metadata then records. Results obtained with them are mechanics evidence only, never
+decides: SyntheticClassifier labels commits the test names one by one (by subject line,
+with a tool name the test makes up) and calls every other commit non-traced;
+SyntheticPackages treats exactly the paths a test lists as package code;
+SyntheticBulkRules (Day 7) says a1 only for the configuration paths a test lists and a3
+only for the subject lines it lists. None uses a pattern, an identifier from CL-03 or any
+matching rule, and all report list names starting "SYNTHETIC — not CL-03", which the run
+metadata then records. Results obtained with them are mechanics evidence only, never
 evidence for an acceptance check that CL-03 blocks.
 
 LocalAccess stands in for the FR-03 GitHub check and clones a local fixture for a
@@ -26,6 +28,7 @@ from tdea.aggregator.research_service import ResearchService, ServicePaths
 from tdea.analyzer.research.engine import ResearchEngine, Rg1Rules
 from tdea.analyzer.research.profile import EnvironmentFacts, ResearchProfile
 from tdea.analyzer.research.rg1.provenance import ListVersion, Provenance, TraceStatus
+from tdea.git_handler.file_changes import FileChange
 from tdea.git_handler.errors import TdeaError
 from tdea.git_handler.research_commit import RawCommitStrings
 from tdea.git_handler.url_validator import RepositoryRef
@@ -40,10 +43,14 @@ FX_RG1_PACKAGES = (
     "pkg/__init__.py", "pkg/util.py", "pkg/helpers.py", "pkg/core.py", "pkg/report.py",
     "pkg/feature.py", "pkg/tracked_a.py", "pkg/tracked_alpha.py", "pkg/tracked_b.py",
     "pkg/tracked_c.py", "pkg/tracked_d.py", "pkg/bot_pinned.py", "pkg/feature_flags.py",
-)
+) + tuple(f"pkg/modes/{name}.py" for name in (  # FX-RG1 v3 (Day 7)
+    "sweep_item", "bulk_fix", "removed", "deleted", "rewrite", "local", "broken",
+    "artifact", "message_fix", "config_fix", "module_level"))
 FX_PAIRS_PACKAGES = tuple(f"pairs/{name}.py" for name in (
     "a_moved", "b_duplicate", "c_two_scopes", "d_whitespace", "e_added_modified_untouched"))
 BOT_SUBJECTS = ("Pin versions",)  # FX-RG1 v2's dependency-bot commit that adds a warning
+BULK_SUBJECTS = ("SYNTHETIC bulk message: fix the message module",)  # FX-RG1 v3, a3
+BULK_CONFIG_PATHS = ("lint.cfg",)  # FX-RG1 v3, a1
 
 
 def _version(what: str) -> ListVersion:
@@ -54,15 +61,20 @@ def _version(what: str) -> ListVersion:
 class SyntheticClassifier:
     """SYNTHETIC — not CL-03: commits named by subject get a status; others non-traced."""
 
-    def __init__(self, labelled: Mapping[str, TraceStatus] | None = None) -> None:
-        """Label the commits whose first message line is a key of ``labelled``."""
+    def __init__(self, labelled: Mapping[str, TraceStatus] | None = None,
+                 tools: Mapping[str, str] | None = None) -> None:
+        """Label the commits whose first message line is a key of ``labelled``.
+
+        ``tools`` gives a made-up tool name for some of those subjects (never a CL-03 one).
+        """
         self.labelled = dict(labelled or {})
+        self.tools = dict(tools or {})
 
     def classify(self, raw: RawCommitStrings) -> Provenance:
         """Return the test's label for this commit, never a CL-03 decision."""
         subject = raw.message.split("\n", 1)[0].strip()
         status = self.labelled.get(subject, TraceStatus.NON_TRACED)
-        return Provenance(status, None, (), None, self.list_versions())
+        return Provenance(status, None, (), self.tools.get(subject), self.list_versions())
 
     def list_versions(self) -> tuple[ListVersion, ...]:
         """Return the double's list version."""
@@ -85,6 +97,29 @@ class SyntheticPackages:
         return _version("package filter")
 
 
+class SyntheticBulkRules:
+    """SYNTHETIC — not CL-03: a1 for the listed configuration paths, a3 for listed subjects."""
+
+    def __init__(self, config_paths: Iterable[str] = BULK_CONFIG_PATHS,
+                 subjects: Iterable[str] = BULK_SUBJECTS) -> None:
+        """Treat changes of ``config_paths`` as a1 and messages with ``subjects`` as a3."""
+        self.config_paths = frozenset(config_paths)
+        self.subjects = frozenset(subjects)
+
+    def config_changed(self, changes: Iterable[FileChange]) -> bool:
+        """Answer from the explicit path list."""
+        return any(side is not None and side.path in self.config_paths
+                   for change in changes for side in (change.old, change.new))
+
+    def message_matches(self, message: str) -> bool:
+        """Answer from the explicit subject list."""
+        return message.split("\n", 1)[0].strip() in self.subjects
+
+    def list_versions(self) -> tuple[ListVersion, ...]:
+        """Return the double's list version."""
+        return (_version("bulk lists"),)
+
+
 @dataclass
 class LocalAccess:
     """Not FR-03: accepts any mapped repository and clones its local fixture."""
@@ -105,9 +140,10 @@ class LocalAccess:
 
 
 def synthetic_rules(bots: Iterable[str] = BOT_SUBJECTS) -> Rg1Rules:
-    """Return SYNTHETIC — not CL-03 rules for FX-RG1 v2 and FX-PAIRS."""
+    """Return SYNTHETIC — not CL-03 rules for FX-RG1 v2 and v3 and FX-PAIRS."""
     return Rg1Rules(SyntheticClassifier({subject: TraceStatus.BOT for subject in bots}),
-                    SyntheticPackages(FX_RG1_PACKAGES + FX_PAIRS_PACKAGES))
+                    SyntheticPackages(FX_RG1_PACKAGES + FX_PAIRS_PACKAGES),
+                    SyntheticBulkRules())
 
 
 class TickingClock:

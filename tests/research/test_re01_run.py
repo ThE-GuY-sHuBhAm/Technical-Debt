@@ -149,7 +149,7 @@ def test_synthetic_run_metadata_records_every_fr52_field(built: Built, tmp_path:
     (lists,) = rows(workspace.store, "SELECT rule_list_versions, prepare_module_version, "
                                      "rename_threshold, time_limit_seconds, cutoff FROM run")
     assert "SYNTHETIC — not CL-03: classifier" in lists[0]
-    assert '"bulk_config_files"' in lists[0] and lists[1:] == (
+    assert "SYNTHETIC — not CL-03: bulk lists" in lists[0] and lists[1:] == (
         "1", 50, 120.0, "2026-10-11T00:00:00+00:00")
 
 

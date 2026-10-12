@@ -28,8 +28,8 @@ import pytest
 from fixture_git import FixtureRepo
 from run_setup import Built
 from run_support import (FX_RG1_PACKAGES, FX_RG1_URL, FX_RG1_WINDOWS, LocalAccess,
-                         SyntheticClassifier, SyntheticPackages, Workspace, dump, four_units,
-                         rows, run_file_text)
+                         SyntheticBulkRules, SyntheticClassifier, SyntheticPackages, Workspace,
+                         dump, four_units, rows, run_file_text)
 
 from tdea.aggregator.research_job import ResearchJob, RunObserver, plan_units
 from tdea.aggregator.research_service import ResearchRunError
@@ -361,7 +361,8 @@ def test_a_cl03_refusal_during_a_run_exits_3_and_stores_nothing_for_the_reposito
 ) -> None:
     """Lists marked complete with matching still undefined: refused (exit 3), never guessed."""
     workspace = built.workspace(tmp_path / "ws")
-    rules = Rg1Rules(RefusingClassifier(), SyntheticPackages(FX_RG1_PACKAGES))
+    rules = Rg1Rules(RefusingClassifier(), SyntheticPackages(FX_RG1_PACKAGES),
+                     SyntheticBulkRules())
     assert main(["research", "run", str(workspace.run_file(four_units()))],
                 service=workspace.service(rules)) == EXIT_REFUSED
     err = capsys.readouterr().err
@@ -465,3 +466,26 @@ def test_a_clone_folder_that_is_a_link_is_refused_not_followed(tmp_path: Path) -
     with pytest.raises(NotADirectoryError):
         remove_stale_clones(link)
     assert victim.is_dir()
+
+
+def test_day7_records_are_written_with_their_units(built: Built, tmp_path: Path) -> None:
+    """FR-56 records in each unit's transaction: a base rate for every item, a disappearance
+    and four modes for every item with c1, and four summaries for every unit, also for a
+    unit without disappearances, whose share is null (not 0) (Day 7, P1)."""
+    workspace = built.workspace(tmp_path / "ws")
+    assert main(["research", "run", str(workspace.run_file(four_units()))],
+                service=workspace.service()) == EXIT_OK
+    store = workspace.store
+    (items,) = rows(store, "SELECT count(*) FROM debt_item")[0]
+    (with_c1,) = rows(store, "SELECT count(*) FROM debt_item WHERE c1_commit_id IS NOT NULL")[0]
+    assert (items, with_c1) == (15, 4)
+    assert rows(store, "SELECT count(*) FROM base_rate") == [(items,)]
+    assert rows(store, "SELECT count(*) FROM disappearance") == [(with_c1,)]
+    assert rows(store, "SELECT count(*) FROM item_mode") == [(4 * with_c1,)]
+    assert rows(store, "SELECT count(*), count(DISTINCT unit_id) FROM unit_summary") == [(16, 4)]
+    assert rows(store, "SELECT tau, disappearances, local_fixes, local_fix_share FROM "
+                       "unit_summary JOIN unit USING (unit_id) WHERE window_start LIKE "
+                       "'2026-01-01%' ORDER BY tau") == [
+        (0.5, 0, 0, None), (0.6, 0, 0, None), (0.7, 0, 0, None), (0.8, 0, 0, None)]
+    assert rows(store, "SELECT count(*) FROM item_mode WHERE unvalidated = 1") == [
+        (4 * with_c1,)]

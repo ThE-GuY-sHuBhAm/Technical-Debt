@@ -88,6 +88,11 @@ def source_lines(content: bytes) -> tuple[str, ...]:
     return _split(content)[0]
 
 
+def git_line_numbers(content: bytes) -> tuple[int, ...]:
+    """Return, for each Python line of ``content`` in order, Git's number for its line."""
+    return _split(content)[1]
+
+
 def _split(content: bytes) -> tuple[tuple[str, ...], tuple[int, ...]]:
     """Return the Python lines of ``content`` and, for each, Git's number for its line."""
     encoding, _consumed = tokenize.detect_encoding(io.BytesIO(content).readline)

@@ -7,18 +7,24 @@ git_handler (NFR-14). It offers:
 * check_environment() and run_metadata(): the NFR-24 check and what FR-52 records about
   the profile, the tools, the diff settings and the rule lists.
 * check_rules(): the CL-03 refusal (Task 7 Day 6 decision 1). A real run needs commits
-  classified (FR-54) and package files filtered (FR-51 d); CL-03 v0.1 marks the AI-tool,
-  bot and package-filter lists incomplete and defines no matching rule, so a run is
-  refused with exit 3 before any lock, clone or write. The refusal reads only the lists'
-  completeness; nothing about CL-03 is decided here.
-* open_repository() and run_rg1_unit(): one RG1 repository and one unit (unit_run).
+  classified (FR-54), package files filtered (FR-51 d) and, from Day 7, bulk changes
+  recognised (FR-56 a1, a3, the D-4 lists; Day 7 decision); CL-03 v0.1 marks the AI-tool,
+  bot, package-filter and both bulk lists incomplete and defines no matching rule, so a
+  run is refused with exit 3 before any lock, clone or write. The refusal reads only the
+  lists' completeness; nothing about CL-03 is decided here.
+* open_repository() and run_rg1_unit(): one RG1 repository and one unit (unit_run),
+  through introductions, tracking, disappearance modes and base rates.
 
 Failures carry the three FR-05 parts and, where an agreed exit code exists, that code:
 RulesIncomplete and HistoryChanged 3, SelectionInvalid 1. UnitStopped has none; it names
 its failure category and the open item that blocks the code: CL-15 for a clone or network
 failure (SRS v2.3 exit 4, absent from the Specification Freeze), CL-19 for a failed
 accessibility check at run time, and none for failures no source covers (history read
-failure, tracking stopped on a binary diff). The categorisation is Day 6's reading.
+failure, tracking stopped on a binary diff). The categorisation is Day 6's reading. From
+Day 7 the fail-closed stops of FR-56 (fail_closed.py: CL-17's module-level case, an
+unlocatable scope, unknown provenance, an unreadable version, an inconsistent file change)
+are UnitStopped too, with their category and no open item for the code: they use Day 6's
+unresolved-code path and no exit code is mapped for them (Day 7 decision P6).
 
 The rules, the profile, the repository access (FR-03 check and clone source) and the
 clock can be replaced, so tests can run units on local fixtures with test doubles; the
@@ -35,6 +41,8 @@ from pathlib import Path
 
 from tdea.analyzer.research.profile import (EnvironmentFacts, LintCachePort,
                                             ResearchProfile)
+from tdea.analyzer.research.rg1.bulk import BulkRules, BulkRulesUnresolved, Cl03BulkRules
+from tdea.analyzer.research.rg1.fail_closed import ClassificationStopped
 from tdea.analyzer.research.rg1.package_filter import FilterRulesUnresolved, PackageFilter
 from tdea.analyzer.research.rg1.provenance import (ListVersion, MatchingRulesUnresolved,
                                                    ProvenanceClassifier)
@@ -48,7 +56,6 @@ from tdea.analyzer.research.rg1.unit_run import (Classifier, HistoryChanged, His
                                                  SessionParts, UnitOutcome, UnitWindow,
                                                  commit_record)
 from tdea.analyzer.research.rg10.prepare import PREPARE_MODULE_VERSION
-from tdea.analyzer.research.rule_lists import BULK_CONFIG_FILES, BULK_MESSAGE_PATTERNS
 from tdea.git_handler.errors import ErrorCode, TdeaError
 from tdea.git_handler.github_client import GitHubClient
 from tdea.git_handler.history_reader import (RENAME_THRESHOLD, HistoryReader,
@@ -56,7 +63,7 @@ from tdea.git_handler.history_reader import (RENAME_THRESHOLD, HistoryReader,
 from tdea.git_handler.local_repository import LocalRepository, remove_stale_clones
 from tdea.git_handler.url_validator import RepositoryRef, UrlValidator
 
-CL03_UNRESOLVED = (MatchingRulesUnresolved, FilterRulesUnresolved)
+CL03_UNRESOLVED = (MatchingRulesUnresolved, FilterRulesUnresolved, BulkRulesUnresolved)
 __all__ = ["CheckedUrl", "GitHubAccess", "HistoryChanged", "RecordedRepository",
            "RepositoryPlan",
            "ResearchEngine", "Rg1Rules", "RulesIncomplete", "SelectionInvalid",
@@ -100,8 +107,8 @@ class RulesIncomplete(Exception):
                  if len(incomplete) > 1 else f"list {''.join(incomplete)} is")
         self.cause = (detail if detail is not None else
                       f"The CL-03 rule {named} marked incomplete, so commits cannot be "
-                      "classified (FR-54) or package files filtered (FR-51 d) with "
-                      "authoritative rules.")
+                      "classified (FR-54), package files filtered (FR-51 d) or bulk "
+                      "changes recognised (FR-56 a1, a3) with authoritative rules.")
         self.action = ("Run research only with a TDEA version that holds the finalised "
                        "CL-03 lists and matching rules; validate works meanwhile.")
         super().__init__(f"{self.error_type}: {self.cause} {self.action}")
@@ -145,9 +152,12 @@ class UnitStopped(Exception):
         super().__init__(f"{error_type}: {cause} {action}")
 
     @classmethod
-    def wrap(cls, url: str, error: TdeaError | TrackingStopped) -> UnitStopped:
+    def wrap(cls, url: str,
+             error: TdeaError | TrackingStopped | ClassificationStopped) -> UnitStopped:
         """Return the stop for a structured lower-layer failure, naming the repository."""
-        if isinstance(error, TrackingStopped):
+        if isinstance(error, ClassificationStopped):
+            category, open_item = error.category, None
+        elif isinstance(error, TrackingStopped):
             category, open_item = "tracking stop on a binary diff", None
         else:
             category, open_item = _STOP_CATEGORIES.get(error.code,
@@ -158,14 +168,16 @@ class UnitStopped(Exception):
 
 @dataclass(frozen=True)
 class Rg1Rules:
-    """The CL-03 components an RG1 run uses: provenance and the package filter."""
+    """The CL-03 components an RG1 run uses: provenance, package filter and bulk lists."""
 
     classifier: Classifier = field(default_factory=ProvenanceClassifier)
     package_filter: PackageRules = field(default_factory=PackageFilter)
+    bulk: BulkRules = field(default_factory=Cl03BulkRules)
 
     def list_versions(self) -> tuple[ListVersion, ...]:
         """Return the version, completeness and hash of every list the run uses."""
-        return (*self.classifier.list_versions(), self.package_filter.list_version())
+        return (*self.classifier.list_versions(), self.package_filter.list_version(),
+                *self.bulk.list_versions())
 
     def incomplete(self) -> tuple[str, ...]:
         """Return the names of the lists that are not complete."""
@@ -225,10 +237,7 @@ class ResearchEngine:
     def run_metadata(self, facts: EnvironmentFacts) -> dict[str, object]:
         """Return what FR-52 records about the profile, tools, diff and rule lists."""
         diff = research_diff_settings()
-        lists = (*self._rules.list_versions(),
-                 *(ListVersion(rules.name, rules.version, rules.complete,
-                               rules.content_hash())
-                   for rules in (BULK_CONFIG_FILES, BULK_MESSAGE_PATTERNS)))
+        lists = self._rules.list_versions()
         return {
             **self._profile.metadata(facts),
             "git_version": diff["git_version"],
@@ -271,10 +280,10 @@ class ResearchEngine:
 
     def run_rg1_unit(self, session: RepositorySession, window: UnitWindow,
                      w_months: int) -> UnitOutcome:
-        """Analyse one RG1 unit: selection, lint, introductions and tracking (steps 7-10)."""
+        """Analyse one RG1 unit: selection, lint, introductions, tracking, modes (7-11)."""
         try:
             return session.run_unit(window, w_months)
-        except (TdeaError, TrackingStopped) as exc:
+        except (TdeaError, TrackingStopped, ClassificationStopped) as exc:
             raise UnitStopped.wrap(session.record.url, exc) from None
         except CL03_UNRESOLVED as exc:
             raise RulesIncomplete(self._rules.incomplete(), str(exc)) from None
@@ -305,4 +314,4 @@ class ResearchEngine:
                         for commit in history.commits)
         record = RepositoryRecord(plan.url, branch, clone_time, history.head, cutoff, records)
         return RepositorySession(SessionParts(local, source, history, record, statuses),
-                                 self._rules.package_filter)
+                                 self._rules.package_filter, self._rules.bulk)

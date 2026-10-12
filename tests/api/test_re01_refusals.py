@@ -81,6 +81,7 @@ def test_cl03_refuses_every_real_run_before_lock_clone_or_write(
     error, cause, action = output.err.splitlines()
     assert error == "Error: Research run refused"
     assert "CL-03" in cause and "incomplete" in cause and "FR-54" in cause
+    assert "bulk_config_files and bulk_message_patterns" in cause and "FR-56 a1, a3" in cause
     assert action.startswith("Action: Run research only")
     assert files_in(workspace.root) == ["run.yaml"]
 

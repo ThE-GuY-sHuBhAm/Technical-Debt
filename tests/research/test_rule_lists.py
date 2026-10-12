@@ -5,7 +5,12 @@ from __future__ import annotations
 import dataclasses
 import re
 
+import pytest
+from run_support import PINNED_FACTS
+
 from tdea.analyzer.research import rule_lists
+from tdea.analyzer.research.engine import ResearchEngine, Rg1Rules
+from tdea.analyzer.research.rg1.bulk import BulkRulesUnresolved, Cl03BulkRules
 from tdea.analyzer.research.rule_lists import ALL_LISTS, RuleEntry
 
 PERMITTED_SOURCES = {rule_lists.P2_ATTRIBUTION, rule_lists.P2_FILES, rule_lists.SRS_D4,
@@ -65,3 +70,24 @@ def test_manifest_names_every_list_with_version_and_hash() -> None:
     for rule_list in ALL_LISTS:
         assert manifest[rule_list.name] == {"version": "0.1", "complete": False,
                                             "sha256": rule_list.content_hash()}
+
+
+def test_the_cl03_gate_and_run_metadata_include_the_bulk_lists() -> None:
+    """Day 7 decision: the D-4 bulk lists join the CL-03 gate and stay incomplete."""
+    rules = Rg1Rules()
+    assert rules.incomplete() == ("ai_tool_patterns", "non_ai_bots", "package_filter",
+                                  "bulk_config_files", "bulk_message_patterns")
+    lists = ResearchEngine(rules).run_metadata(PINNED_FACTS)["rule_list_versions"]
+    assert lists["bulk_config_files"] == {
+        "version": "0.1", "complete": False,
+        "sha256": rule_lists.BULK_CONFIG_FILES.content_hash()}
+    assert lists["bulk_message_patterns"]["complete"] is False
+
+
+def test_the_cl03_bulk_rules_refuse_to_match() -> None:
+    """No matching rule exists for a1 or a3, so the rules refuse rather than guess."""
+    bulk = Cl03BulkRules()
+    with pytest.raises(BulkRulesUnresolved):
+        bulk.config_changed(())
+    with pytest.raises(BulkRulesUnresolved):
+        bulk.message_matches("Run black over the package")

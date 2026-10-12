@@ -22,7 +22,10 @@ What research.db holds, and when (Task 7 Day 6 readings):
   repository's whole first-parent history (commits with identity keys only, and file
   changes with hunks and the package-filter answer) are written in the transaction of
   the repository's first unit. Each unit's transaction then sets unit_id on its selected
-  commits and adds its debt items with their tracking fields.
+  commits and adds its debt items with their tracking fields and, from Day 7, each
+  disappearance with its signals, its four item modes (one per tau, unvalidated = true),
+  every item's base rate and the unit's four summaries (FR-56). A fail-closed FR-56 stop
+  happens before the transaction, so nothing of that unit is stored.
 * A repository that already has a row is read again from its recorded HEAD and cut-off;
   if the history read differs from the stored one, the run is refused as "history
   changed" (FR-49, exit 3).
@@ -47,13 +50,15 @@ from pathlib import Path
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from tdea.aggregator.research_models import (Commit, DebtItem, FileChange, Repository, Run,
-                                             Unit, canonical_json, iso_utc)
+from tdea.aggregator.research_models import (BaseRate, Commit, DebtItem, Disappearance,
+                                             FileChange, ItemMode, Repository, Run, Unit,
+                                             UnitSummary, canonical_json, iso_utc)
 from tdea.aggregator.research_store import ResearchStore
 from tdea.aggregator.run_file import RepositorySpec, RunFile, WindowSpec
 from tdea.analyzer.research.engine import (RecordedRepository, RepositoryPlan,
                                            ResearchEngine, UnitOutcome, UnitWindow)
 from tdea.analyzer.research.profile import LintCachePort
+from tdea.analyzer.research.rg1.disappearance import LOCAL_FIX
 from tdea.analyzer.research.rg1.unit_run import ChangeRecord, RepositoryRecord, TrackedItem
 
 RUNNING = "running"
@@ -292,8 +297,10 @@ class ResearchJob:
             session.add(row)
             session.flush()
             _select_commits(session, repository.repository_id, row.unit_id, outcome.selected)
-            session.add_all(_debt_item(row.unit_id, item, commit_ids) for item in outcome.items)
+            items = [_debt_item(row.unit_id, item, commit_ids) for item in outcome.items]
+            session.add_all(items)
             session.flush()
+            _add_outcomes(session, row.unit_id, items, outcome)
             self._observer.unit_written(unit, total)
         return counts
 
@@ -408,3 +415,43 @@ def _debt_item(unit_id: int, item: TrackedItem, commit_ids: dict[str, int]) -> D
         blob_before_c1=tracking.blob_before_c1, path_after_c1=tracking.path_after_c1,
         blob_after_c1=tracking.blob_after_c1, line_before_c1=tracking.line_before_c1,
         text_before_c1=tracking.text_before_c1, clock_anomaly=tracking.clock_anomaly)
+
+
+def _add_outcomes(session: Session, unit_id: int, rows: Sequence[DebtItem],
+                  outcome: UnitOutcome) -> None:
+    """Add the FR-56 records of a unit's items and its summaries (Task 7 Day 7)."""
+    for row, item in zip(rows, outcome.items, strict=True):
+        found = item.disappearance
+        if found is not None:
+            session.add(Disappearance(
+                item_id=row.item_id, bulk_a1=found.bulk_a1, bulk_a2=found.bulk_a2,
+                bulk_a3=found.bulk_a3, file_removed=found.file_removed,
+                parse_failure_reason=found.parse_failure_reason,
+                counterpart_method=found.counterpart.method,
+                counterpart_scope=found.counterpart.scope,
+                similarity=found.counterpart.similarity,
+                touch_exact=found.touch.exact if found.touch is not None else None,
+                touch_near=found.touch.near if found.touch is not None else None,
+                touch_scope=found.touch.scope if found.touch is not None else None,
+                resolver_trace_status=found.resolver_trace_status,
+                resolver_tool=found.resolver_tool, same_name=found.same_name,
+                same_email=found.same_email))
+        rate = item.base_rate
+        if rate is None:
+            raise RuntimeError("every debt item has a base rate (FR-56)")
+        session.add(BaseRate(item_id=row.item_id, ai_traced_count=rate.ai_traced,
+                             non_traced_count=rate.non_traced,
+                             ai_traced_share=rate.ai_traced_share,
+                             window_end=iso_utc(rate.window_end)))
+    session.flush()  # disappearance rows exist before the item modes that reference them
+    for row, item in zip(rows, outcome.items, strict=True):
+        if item.disappearance is not None:
+            session.add_all(ItemMode(item_id=row.item_id, tau=tau, mode=mode,
+                                     local_fix=mode == LOCAL_FIX, unvalidated=True)
+                            for tau, mode in item.disappearance.modes)
+    session.add_all(UnitSummary(unit_id=unit_id, tau=summary.tau,
+                                disappearances=summary.disappearances,
+                                local_fixes=summary.local_fixes,
+                                local_fix_share=summary.local_fix_share)
+                    for summary in outcome.summaries)
+    session.flush()

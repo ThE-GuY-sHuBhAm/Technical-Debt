@@ -10,9 +10,12 @@ stay in memory here; only identity keys and rewritten messages leave (CommitReco
 run_unit() is one unit (one repository-window, NFR-25): the selected commits (FR-49);
 for each, the parent and new versions of its changed package .py files, linted alone
 through the lint cache (FR-51, NFR-25); introductions (FR-53, IntroductionDetector); and
-the tracking of every introduced item (FR-55, ItemTracker). Disappearance modes and
-covariates (FR-56, FR-57) are Day 7 and later. Nothing is written here: the aggregator
-stores a unit's outcome in one transaction.
+the tracking of every introduced item (FR-55, ItemTracker); for every item that
+disappears, its mode at each tau with all signals (FR-56, DisappearanceClassifier); every
+item's base rate (FR-56, base_rate); and the unit's summary at each tau (Task 7 Day 7).
+Covariate records (FR-57) follow on Day 8. Nothing is written here: the aggregator
+stores a unit's outcome in one transaction, and a fail-closed stop of FR-56 is raised
+before it, so nothing of that unit is stored.
 
 Run control readings (Task 7 Day 6 report):
 
@@ -40,10 +43,15 @@ from pathlib import Path, PurePosixPath
 from typing import Protocol
 
 from tdea.analyzer.research.profile import LintCachePort, LintResult, ResearchProfile
+from tdea.analyzer.research.rg1.base_rate import BaseRate, base_rate
+from tdea.analyzer.research.rg1.bulk import BulkRules
+from tdea.analyzer.research.rg1.disappearance import (Disappearance, DisappearanceClassifier,
+                                                      UnitSummary, unit_summaries)
+from tdea.analyzer.research.rg1.fail_closed import provenance_unknown
 from tdea.analyzer.research.rg1.introduction import (FileVersions, Introduction,
                                                      IntroductionDetector)
 from tdea.analyzer.research.rg1.package_filter import PYTHON_SUFFIX
-from tdea.analyzer.research.rg1.provenance import ListVersion, Provenance
+from tdea.analyzer.research.rg1.provenance import ListVersion, Provenance, TraceStatus
 from tdea.analyzer.research.rg1.pseudonymiser import Pseudonymiser
 from tdea.analyzer.research.rg1.tracking import ChainCommit, ItemTracker, Tracking, chain_of
 from tdea.git_handler.commit_selector import CommitSelector, Window
@@ -184,10 +192,12 @@ class UnitWindow:
 
 @dataclass(frozen=True)
 class TrackedItem:
-    """One introduced item and its FR-55 tracking."""
+    """One introduced item, its FR-55 tracking and its FR-56 disappearance and base rate."""
 
     introduction: Introduction
     tracking: Tracking
+    disappearance: Disappearance | None = None  # None while the item has no c1
+    base_rate: BaseRate | None = None
 
 
 @dataclass(frozen=True)
@@ -199,6 +209,7 @@ class UnitOutcome:
     lint_failures: int
     commits_after_cutoff: int
     binary_files: tuple[tuple[str, str], ...] = ()  # (commit SHA, path), listed only
+    summaries: tuple[UnitSummary, ...] = ()  # one per tau (FR-56)
 
 
 class HistorySource:
@@ -246,13 +257,15 @@ class SessionParts:
 class RepositorySession:
     """One cloned repository of a run, its history and its units; close() deletes it."""
 
-    def __init__(self, parts: SessionParts, package_rules: PackageRules) -> None:
+    def __init__(self, parts: SessionParts, package_rules: PackageRules,
+                 bulk_rules: BulkRules) -> None:
         """Hold the clone, its history and the record built from them."""
         self._local = parts.local
         self._history = parts.history
         self.record = parts.record
         self._statuses = parts.statuses
         self._package_rules = package_rules
+        self._bulk_rules = bulk_rules
         self._source = parts.source
         self._chain: tuple[ChainCommit, ...] = chain_of(parts.history)
         self._package = {commit.sha: {_path(record.change): record.is_package
@@ -270,7 +283,15 @@ class RepositorySession:
             self._select(window)
 
     def run_unit(self, window: UnitWindow, w_months: int) -> UnitOutcome:
-        """Analyse one unit: selection, lint, introductions and tracking."""
+        """Analyse one unit: selection, lint, introductions, tracking, modes, base rates.
+
+        A commit of the history without a known trace status stops the unit first (fail
+        closed, Day 7 reading R5): the history is stored with a repository's first unit,
+        and an unknown status is never read as non-traced.
+        """
+        for commit in self.record.commits:
+            if not isinstance(commit.provenance.status, TraceStatus):
+                raise provenance_unknown(commit.sha)
         selected = self._select(window)
         detector = IntroductionDetector(self._package_rules)
         introductions: list[Introduction] = []
@@ -284,14 +305,23 @@ class RepositorySession:
             failures += len(found.failed_files)
             binary.extend((commit.sha, path) for path in found.binary_files)
         tracker = ItemTracker(self._source)
-        items = tuple(TrackedItem(introduction, tracker.track(
-            introduction, self._chain, w_months, self.record.cutoff))
-            for introduction in introductions)
+        classifier = DisappearanceClassifier(
+            self._source, self._bulk_rules,
+            {commit.sha: commit for commit in self.record.commits})
+        items = []
+        for introduction in introductions:
+            tracking = tracker.track(introduction, self._chain, w_months, self.record.cutoff)
+            disappearance = (classifier.classify(introduction, tracking)
+                             if tracking.c1_sha is not None else None)
+            items.append(TrackedItem(introduction, tracking, disappearance,
+                                     base_rate(introduction, self.record.commits, w_months)))
         bounds = Window(window.start, window.end)
         after_cutoff = sum(1 for excluded in self._history.excluded
                            if bounds.contains(excluded.committed_at))
-        return UnitOutcome(tuple(commit.sha for commit in selected), items, failures,
-                           after_cutoff, tuple(binary))
+        summaries = unit_summaries([item.disappearance for item in items
+                                    if item.disappearance is not None])
+        return UnitOutcome(tuple(commit.sha for commit in selected), tuple(items), failures,
+                           after_cutoff, tuple(binary), summaries)
 
     def close(self) -> None:
         """Delete the clone (FR-10); safe to call more than once."""
