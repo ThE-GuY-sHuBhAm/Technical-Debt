@@ -1,9 +1,10 @@
-"""Shared research fixtures: FX-RG1 v1, v2 and v3 built once per session, clones, a key.
+"""Shared research fixtures: FX-RG1 v1 to v4 built once per session, clones, a key.
 
 The research key is a fixed, test-only 32-byte value so identity keys in tests are
 reproducible; real runs use the KeyStore's random key. FX-RG1 v2 (Day 6) is v1 plus the
 RE-10 and RE-08 cases; v1's fixtures are unchanged. FX-RG1 v3 (Day 7) is v2 plus the
-RE-11 disappearance-mode cases; v1's and v2's commits are unchanged.
+RE-11 disappearance-mode cases; v1's and v2's commits are unchanged. FX-RG1 v4 (Day 8)
+is v3 plus the RE-13 covariate cases; v1's to v3's commits are unchanged.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from collections.abc import Iterator
 import make_fx_rg1
 import make_fx_rg1_v2
 import make_fx_rg1_v3
+import make_fx_rg1_v4
 import pytest
 import run_setup
 from fx_rg1_clone import ClonedFxRg1, ClonedFxRg1V2, clone_fx_rg1, clone_fx_rg1_v2
@@ -54,6 +56,12 @@ def _cloned_fx_rg1_v2(
 def _fx_rg1_v3(tmp_path_factory: pytest.TempPathFactory) -> make_fx_rg1_v3.FxRg1V3:
     """Build FX-RG1 v3 once for the test session."""
     return make_fx_rg1_v3.build(tmp_path_factory.mktemp("fx-v3") / "fx-rg1")
+
+
+@pytest.fixture(name="fx_rg1_v4", scope="session")
+def _fx_rg1_v4(tmp_path_factory: pytest.TempPathFactory) -> make_fx_rg1_v4.FxRg1V4:
+    """Build FX-RG1 v4 once for the test session."""
+    return make_fx_rg1_v4.build(tmp_path_factory.mktemp("fx-v4") / "fx-rg1")
 
 
 @pytest.fixture(name="built", scope="session")

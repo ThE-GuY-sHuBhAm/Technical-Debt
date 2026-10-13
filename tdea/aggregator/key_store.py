@@ -62,6 +62,18 @@ class KeyStore:
         """Return the first 16 hex characters of SHA-256 of the key."""
         return hashlib.sha256(self.key()).hexdigest()[:16]
 
+    def existing_fingerprint(self) -> str | None:
+        """Return the fingerprint if the key file exists, else None; never create one.
+
+        Used where nothing may be written (Task 7 Day 8: the stored-run check before the
+        lock). An existing file is checked exactly as key() checks it.
+        """
+        if self._key is None:
+            if not self._path.is_file():
+                return None
+            self._key = self._load()
+        return self.fingerprint()
+
     def _create(self) -> None:
         """Write a new random key with owner-only permissions; never overwrite a file."""
         self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -101,5 +113,4 @@ class KeyStore:
                 f"The key file {self._path} does not hold a {KEY_BYTES * 8}-bit key; "
                 "restore it from your backup. TDEA does not replace an existing key file."
             )
-        return key
-    
+        return key    

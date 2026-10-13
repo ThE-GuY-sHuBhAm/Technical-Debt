@@ -24,8 +24,19 @@ What research.db holds, and when (Task 7 Day 6 readings):
   the repository's first unit. Each unit's transaction then sets unit_id on its selected
   commits and adds its debt items with their tracking fields and, from Day 7, each
   disappearance with its signals, its four item modes (one per tau, unvalidated = true),
-  every item's base rate and the unit's four summaries (FR-56). A fail-closed FR-56 stop
-  happens before the transaction, so nothing of that unit is stored.
+  every item's base rate and the unit's four summaries (FR-56), and, from Day 8, every
+  item's covariate row (FR-57; account tenure null, deferred pending the RM decision on
+  Q9). A fail-closed FR-56 or FR-57 stop happens before the transaction, so nothing of
+  that unit is stored.
+* Before a stored run is resumed or reported complete, its completed units are checked
+  (Task 7 Day 8 decisions R3.2, R3.3 and A): every debt item of a completed unit has its
+  covariate row (exactly one: the row's key is the item) and every completed unit has
+  exactly one summary per tau. A store written before Day 8 fails the check, and the
+  run is refused through the unresolved-code path (exit 1 placeholder, decision R4.3)
+  before anything is written, repaired or recomputed. The TDEA version is unchanged.
+  ResearchService runs check_store() on a read-only store before it takes the lock, so a
+  refused run writes nothing at all, and again under the lock before it touches the
+  clone folder or the lint cache or creates this job.
 * A repository that already has a row is read again from its recorded HEAD and cut-off;
   if the history read differs from the stored one, the run is refused as "history
   changed" (FR-49, exit 3).
@@ -42,6 +53,7 @@ it creates a job.
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -50,14 +62,15 @@ from pathlib import Path
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from tdea.aggregator.research_models import (BaseRate, Commit, DebtItem, Disappearance,
-                                             FileChange, ItemMode, Repository, Run, Unit,
-                                             UnitSummary, canonical_json, iso_utc)
+from tdea.aggregator.research_models import (BaseRate, Commit, Covariate, DebtItem,
+                                             Disappearance, FileChange, ItemMode, Repository,
+                                             Run, Unit, UnitSummary, canonical_json, iso_utc)
 from tdea.aggregator.research_store import ResearchStore
 from tdea.aggregator.run_file import RepositorySpec, RunFile, WindowSpec
 from tdea.analyzer.research.engine import (RecordedRepository, RepositoryPlan,
                                            ResearchEngine, UnitOutcome, UnitWindow)
 from tdea.analyzer.research.profile import LintCachePort
+from tdea.analyzer.research.rg1.defaults import TAUS
 from tdea.analyzer.research.rg1.disappearance import LOCAL_FIX
 from tdea.analyzer.research.rg1.unit_run import ChangeRecord, RepositoryRecord, TrackedItem
 
@@ -79,6 +92,31 @@ class HistoryMismatch(Exception):
                       "this run recorded, so the run cannot be resumed (FR-49).")
         self.action = ("Restore the repository's history, or start a new run with another "
                        "run file.")
+        super().__init__(f"{self.error_type}: {self.cause} {self.action}")
+
+
+class StoreIncomplete(Exception):
+    """A stored run lacks records its completed units must hold (Task 7 Day 8, R3.2).
+
+    No exit code is agreed for it: it takes Day 6's unresolved-code path, like the
+    fail-closed stops (decision R4.3), so the command line prints the three parts, the
+    undecided note and placeholder status 1.
+    """
+
+    exit_code = None
+    open_item = None
+    category = "research store missing required records"
+
+    def __init__(self, run_id: str, units: int, items: int, summaries: int) -> None:
+        """Name the run and count what is missing."""
+        self.error_type = "Research store incomplete"
+        self.cause = (f"Run {run_id} has {units} completed unit(s) without the records this "
+                      f"TDEA build requires: {items} debt item(s) without a covariate row "
+                      f"(FR-57) and {summaries} unit(s) without exactly one summary per tau "
+                      "(FR-56). Such a store was written by an earlier build or changed "
+                      "outside TDEA, so the run is neither resumed nor reported complete.")
+        self.action = ("Keep this store as it is and give the run file a new store path; "
+                       "TDEA does not repair or recompute completed units.")
         super().__init__(f"{self.error_type}: {self.cause} {self.action}")
 
 
@@ -312,6 +350,31 @@ class ResearchJob:
             run.ended_at = iso_utc(self._clock())
 
 
+def check_store(store: ResearchStore, run_id: str) -> None:
+    """Raise StoreIncomplete if a completed unit of the run lacks required records.
+
+    Read only, so it also runs on a store opened with ResearchStore.read_only(): every
+    debt item of a completed unit has its covariate row (one at most: the row's key is the
+    item) and every completed unit has exactly one summary per tau (Day 8, R3.2).
+    """
+    with store.reader() as session:
+        completed = select(Unit.unit_id).where(Unit.run_id == run_id, Unit.status == COMPLETE)
+        items = Counter(session.scalars(
+            select(DebtItem.unit_id)
+            .outerjoin(Covariate, Covariate.item_id == DebtItem.item_id)
+            .where(DebtItem.unit_id.in_(completed), Covariate.item_id.is_(None))).all())
+        taus: dict[int, list[float]] = {unit_id: [] for unit_id
+                                        in session.scalars(completed).all()}
+        for unit_id, tau in session.execute(
+                select(UnitSummary.unit_id, UnitSummary.tau)
+                .where(UnitSummary.unit_id.in_(completed))).all():
+            taus[unit_id].append(tau)
+    summaries = {unit_id for unit_id, found in taus.items() if sorted(found) != sorted(TAUS)}
+    if items or summaries:
+        raise StoreIncomplete(run_id, len(set(items) | summaries), sum(items.values()),
+                              len(summaries))
+
+
 def _key(unit: PlannedUnit) -> tuple[str, str]:
     """Return how a unit is found in research.db: URL as written and window start."""
     return unit.repository.url, iso_utc(unit.window.start)
@@ -419,7 +482,7 @@ def _debt_item(unit_id: int, item: TrackedItem, commit_ids: dict[str, int]) -> D
 
 def _add_outcomes(session: Session, unit_id: int, rows: Sequence[DebtItem],
                   outcome: UnitOutcome) -> None:
-    """Add the FR-56 records of a unit's items and its summaries (Task 7 Day 7)."""
+    """Add the FR-56 and FR-57 records of a unit's items and its summaries (Days 7, 8)."""
     for row, item in zip(rows, outcome.items, strict=True):
         found = item.disappearance
         if found is not None:
@@ -443,6 +506,17 @@ def _add_outcomes(session: Session, unit_id: int, rows: Sequence[DebtItem],
                              non_traced_count=rate.non_traced,
                              ai_traced_share=rate.ai_traced_share,
                              window_end=iso_utc(rate.window_end)))
+        values = item.covariates
+        if values is None:
+            raise RuntimeError("every debt item has covariates (FR-57)")
+        session.add(Covariate(
+            item_id=row.item_id, file_origin=values.file_origin, volatility=values.volatility,
+            file_size=values.file_size, file_age_days=values.file_age_days,
+            baseline_density=values.baseline_density, commit_lines=values.commit_lines,
+            commit_files=values.commit_files, month=values.month, author_id=values.author_id,
+            account_tenure_days=values.account_tenure_days,
+            prior_commits_to_file=values.prior_commits_to_file,
+            later_activity=values.later_activity))
     session.flush()  # disappearance rows exist before the item modes that reference them
     for row, item in zip(rows, outcome.items, strict=True):
         if item.disappearance is not None:

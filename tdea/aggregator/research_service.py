@@ -14,13 +14,21 @@ is cloned, locked or written before the checks that precede it pass:
 2. check Python 3.11 and the pinned tools (NFR-24, exit 3);
 3. refuse while CL-03 is incomplete (Task 7 Day 6 decision 1, exit 3), before any lock,
    clone or write;
-4. take the CON-03 lock (exit 3 when held, OI-04: rejected, never queued), then delete
-   any clone a killed run left in the run clone folder, ``clones`` inside the lock's
-   per-user folder, which only the lock holder uses (FR-10);
-5. load the key file, creating it on first use (NFR-27), and compute the run identifier
+4. refuse a stored run whose completed units lack required records (Task 7 Day 8,
+   decisions R3.2, R3.3 and A: exit 1 placeholder), reading only: when the key file and
+   research.db both exist, the run identifier is computed from the existing key and the
+   store is read in SQLite's read-only mode, so a refused run leaves no lock, key file,
+   lint cache, clone-folder change or journal behind. Whatever this read cannot settle
+   (no key file or store yet, a store another process is writing or that needs recovery,
+   a file of another kind) is left to the steps below, which report it as before;
+5. take the CON-03 lock (exit 3 when held, OI-04: rejected, never queued);
+6. load the key file, creating it on first use (NFR-27), and compute the run identifier
    (FR-48), which is reported before anything else;
-6. open research.db and the lint cache, and let ResearchJob start or resume the run, with
-   its clones in the run clone folder.
+7. open research.db and check the stored run again under the lock, so a change made by
+   another process after step 4 is still caught; only then delete any clone a killed run
+   left in the run clone folder, ``clones`` inside the lock's per-user folder, which only
+   the lock holder uses (FR-10), open the lint cache and let ResearchJob start or resume
+   the run, with its clones in the run clone folder.
 
 The store path is read relative to the run file's folder (Day 6 reading), as is a
 relative key_file; ``~`` is expanded. The optional PAT is passed to the accessibility
@@ -38,7 +46,9 @@ other failure has exit_code None and names its category and the open item blocki
 code (Day 6 decision 3): CL-15 for a clone, network, disk or file failure (SRS v2.3 exit 4;
 the Specification Freeze has codes 0 to 3 only), CL-19 for a failed accessibility check at
 run time, and none for an unusable key file, a store or lint cache of another kind, a
-history read failure or tracking stopped on a binary diff. None of them is invalid input.
+history read failure, tracking stopped on a binary diff or, from Task 7 Day 8, a stored
+run whose completed units lack required records (StoreIncomplete, decision R4.3). None of
+them is invalid input.
 """
 
 from __future__ import annotations
@@ -59,7 +69,8 @@ from tdea.aggregator.key_store import DEFAULT_KEY_FILE, KeyFileError, KeyStore
 from tdea.aggregator.lint_cache import DEFAULT_LINT_CACHE, LintCache
 from tdea.aggregator.lock import AnalysisLock, LockUnavailable, default_lock_directory
 from tdea.aggregator.research_job import (COMPLETE, PLANNED, HistoryMismatch, ResearchJob,
-                                          RunContext, RunObserver, RunResult, UnitCounts)
+                                          RunContext, RunObserver, RunResult, StoreIncomplete,
+                                          UnitCounts, check_store)
 from tdea.aggregator.research_models import Repository, Run, Unit, iso_utc
 from tdea.aggregator.research_store import ResearchStore
 from tdea.aggregator.run_file import RunFile, read_run_file
@@ -69,7 +80,7 @@ from tdea.analyzer.research.engine import (CL15, HistoryChanged, ResearchEngine,
 from tdea.analyzer.research.profile import EnvironmentFacts, EnvironmentRefused
 
 _AGREED = (EnvironmentRefused, RulesIncomplete, LockUnavailable, HistoryChanged,
-           HistoryMismatch, SelectionInvalid, UnitStopped)
+           HistoryMismatch, SelectionInvalid, UnitStopped, StoreIncomplete)
 CLONE_FOLDER = "clones"
 ANOTHER_KIND = "store or lint cache of another kind"
 _Opened = TypeVar("_Opened", bound=AbstractContextManager)
@@ -183,6 +194,7 @@ class ResearchService:
         try:
             facts = self._engine.check_environment(self._environment)
             self._engine.check_rules()
+            self._refuse_incomplete_store(Path(path), run_file)
             with AnalysisLock(self._paths.lock_directory):
                 return self._run_locked(Path(path), run_file, facts, token, observer)
         except _AGREED as exc:
@@ -213,25 +225,51 @@ class ResearchService:
         with store:
             return StoreStatus(store_path, True, _runs(store))
 
+    def _refuse_incomplete_store(self, path: Path, run_file: RunFile) -> None:
+        """Step 4: raise StoreIncomplete for a stored run lacking records, writing nothing.
+
+        No lock is taken, so this read can only refuse: a store written by the current
+        build adds each unit with all its records in one transaction, so a read that sees
+        records missing is right whenever it happens. A read that cannot be completed is
+        not a refusal; the check under the lock (step 7) decides then.
+        """
+        store_path = _beside(path, run_file.store)
+        if not store_path.is_file():
+            return  # no store yet: no stored run
+        try:
+            fingerprint = KeyStore(self._key_path(path, run_file)).existing_fingerprint()
+            if fingerprint is None:
+                return  # no key file yet: a new key gives a new run identifier
+            run_id = run_identifier(run_file, self._engine.profile_hash(), __version__,
+                                    fingerprint)
+            with ResearchStore.read_only(store_path) as store:
+                check_store(store, run_id)
+        except (KeyFileError, ValueError, OSError, DatabaseError):
+            return  # not settled here: the steps under the lock report it as before
+
     def _run_locked(self, path: Path, run_file: RunFile, facts: EnvironmentFacts,
                     token: str | None, observer: RunObserver) -> RunResult:
-        """Run steps 5 and 6 with the lock held."""
-        key_path = (_beside(path, run_file.key_file) if run_file.key_file is not None
-                    else self._paths.key_file)
-        clones = self._clone_folder()
-        self._engine.discard_stale_clones(clones)
-        key_store = KeyStore(key_path)
+        """Run steps 6 and 7 with the lock held."""
+        key_store = KeyStore(self._key_path(path, run_file))
         key, fingerprint = key_store.key(), key_store.fingerprint()
         run_id = run_identifier(run_file, self._engine.profile_hash(), __version__,
                                 fingerprint)
         observer.run_identified(run_id)
         metadata = self._engine.run_metadata(facts)
-        with _open(ResearchStore, _beside(path, run_file.store), "research store") as store, \
-                _open(LintCache, self._paths.lint_cache, "lint cache") as cache:
-            context = RunContext(run_id, run_file, canonical_text(run_file), __version__, key,
-                                 fingerprint, metadata, lint_cache=cache, token=token,
-                                 clone_root=clones)
-            return ResearchJob(store, self._engine, self._clock, observer).run(context)
+        with _open(ResearchStore, _beside(path, run_file.store), "research store") as store:
+            check_store(store, run_id)  # before the clone folder or the lint cache is touched
+            clones = self._clone_folder()
+            self._engine.discard_stale_clones(clones)
+            with _open(LintCache, self._paths.lint_cache, "lint cache") as cache:
+                context = RunContext(run_id, run_file, canonical_text(run_file), __version__,
+                                     key, fingerprint, metadata, lint_cache=cache,
+                                     token=token, clone_root=clones)
+                return ResearchJob(store, self._engine, self._clock, observer).run(context)
+
+    def _key_path(self, path: Path, run_file: RunFile) -> Path:
+        """Return the key file: the run file's key_file beside it, else the default."""
+        return (_beside(path, run_file.key_file) if run_file.key_file is not None
+                else self._paths.key_file)
 
     def _clone_folder(self) -> Path:
         """Return the run clone folder: ``clones`` in the lock's per-user folder."""

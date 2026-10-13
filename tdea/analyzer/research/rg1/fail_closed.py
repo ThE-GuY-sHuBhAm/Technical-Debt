@@ -1,13 +1,15 @@
-"""Fail-closed stops of the disappearance step (FR-56; Task 7 Day 7 decisions).
+"""Fail-closed stops of the disappearance and covariate steps (FR-56, FR-57; Task 7 Days 7-8).
 
 When FR-56 cannot be applied without a guess, the unit stops instead (decision R9,
 option B, and readings R3, R5 and P6): an unsupported module-level classification
 (CL-17 open), an item scope that cannot be located (R3), a commit whose provenance is
 unknown (never read as non-traced, Task 6), a version that cannot be read, or two
-changes of one followed path in one commit. The stop is raised before the unit's
-transaction starts, so nothing of the unit is stored; earlier units stay. The aggregator
-reports it through Day 6's existing unresolved-code path (the three FR-05 parts, the
-undecided note and placeholder status 1); no exit code is mapped for these stops.
+changes of one followed path in one commit. From Day 8, FR-57 stops the same way (Day 8
+decisions Q4, Q12 and R4.2): a file origin that the recorded history does not establish,
+and a parent version whose baseline density cannot be measured. The stop is raised before
+the unit's transaction starts, so nothing of the unit is stored; earlier units stay. The
+aggregator reports it through Day 6's existing unresolved-code path (the three FR-05
+parts, the undecided note and placeholder status 1); no exit code is mapped for these stops.
 
 Messages hold SHAs, paths and line numbers only, never code text, scope names or
 identities (Freeze, privacy: logs and console hold SHAs, paths and counts).
@@ -17,7 +19,7 @@ from __future__ import annotations
 
 
 class ClassificationStopped(Exception):
-    """FR-56 cannot be applied to an item without guessing; carries the FR-05 parts."""
+    """FR-56 or FR-57 cannot be applied to an item without guessing; carries the FR-05 parts."""
 
     def __init__(self, error_type: str, cause: str, action: str, category: str) -> None:
         """Keep the three parts and the failure category the exit-code note names."""
@@ -83,3 +85,25 @@ def change_inconsistent(sha: str, path: str) -> ClassificationStopped:
         f"Commit {sha} lists more than one change of {path}, so the file cannot be followed.",
         f"{NOT_STORED} Report the commit.",
         "inconsistent file change")
+
+
+def origin_unestablished(path: str, sha: str) -> ClassificationStopped:
+    """Return the FR-57 stop for a file whose adding commit the recorded history lacks."""
+    return ClassificationStopped(
+        "File origin not established",
+        f"Following {path} back from commit {sha} through renames does not reach the commit "
+        "that added it in the recorded history, so its file origin (D-6) cannot be "
+        "recorded and none is inferred.",
+        f"{NOT_STORED} Report the file: an add or rename dated after the cut-off, or an "
+        "inconsistent history, leaves the origin unknown.",
+        "file origin not established")
+
+
+def density_unmeasurable(path: str, sha: str) -> ClassificationStopped:
+    """Return the FR-57 stop for a parent version whose baseline density cannot be measured."""
+    return ClassificationStopped(
+        "Baseline density not computable",
+        f"The parent version of {path} at commit {sha} cannot be measured for D-8: radon "
+        "cannot read it, or it has no successful research-profile lint.",
+        f"{NOT_STORED} Report the file version.",
+        "baseline density not computable")

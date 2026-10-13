@@ -17,7 +17,11 @@ else is real: git, the research profile, the lint cache, research.db and the loc
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import os
+import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -30,11 +34,15 @@ from run_setup import Built
 from run_support import (FX_RG1_PACKAGES, FX_RG1_URL, FX_RG1_WINDOWS, LocalAccess,
                          SyntheticBulkRules, SyntheticClassifier, SyntheticPackages, Workspace,
                          dump, four_units, rows, run_file_text)
+from sqlalchemy.exc import IntegrityError, OperationalError
 
+from tdea.aggregator.lock import AnalysisLock
 from tdea.aggregator.research_job import ResearchJob, RunObserver, plan_units
-from tdea.aggregator.research_service import ResearchRunError
+from tdea.aggregator.research_service import ResearchRunError, ResearchService
+from tdea.aggregator.research_store import ResearchStore
 from tdea.analyzer.research.engine import GitHubAccess, Rg1Rules
 from tdea.analyzer.research.profile import ResearchProfile
+from tdea.analyzer.research.rg1 import unit_run
 from tdea.analyzer.research.rg1.provenance import MatchingRulesUnresolved, UnresolvedMatcher
 from tdea.api import cli
 from tdea.api.cli import EXIT_OK, EXIT_REFUSED, main
@@ -489,3 +497,325 @@ def test_day7_records_are_written_with_their_units(built: Built, tmp_path: Path)
         (0.5, 0, 0, None), (0.6, 0, 0, None), (0.7, 0, 0, None), (0.8, 0, 0, None)]
     assert rows(store, "SELECT count(*) FROM item_mode WHERE unvalidated = 1") == [
         (4 * with_c1,)]
+
+
+# --- Task 7 Day 8: covariate rows, their transaction and the stored-run check -----------
+
+LEGACY_NOTE = ("Exit code unresolved for this research store missing required records: no "
+               "source defines its exit code.")
+
+
+def files(workspace: Workspace) -> dict[str, str]:
+    """Return every folder and file under the workspace (run file, research.db and any
+    journal, key file, lint cache, lock folder and lock file, clone folder and clones),
+    files by SHA-256. Nothing is opened as a database, so a hot journal stays hot."""
+    found = {}
+    for entry in sorted(workspace.root.rglob("*")):
+        name = entry.relative_to(workspace.root).as_posix()
+        found[name] = ("link" if entry.is_symlink() else "folder" if entry.is_dir()
+                       else hashlib.sha256(entry.read_bytes()).hexdigest())
+    return found
+
+
+def state(workspace: Workspace) -> tuple[dict[str, str], dict[str, list[tuple]]]:
+    """Return everything the run can leave behind: files() and every row of research.db."""
+    return files(workspace), dump(workspace.store)
+
+
+def alter(store: Path, statement: str) -> None:
+    """Change research.db as an earlier TDEA build would have left it (test set-up only)."""
+    with sqlite3.connect(store) as connection:
+        connection.execute(statement)
+    connection.close()
+
+
+def test_day8_covariate_rows_are_written_with_their_units(built: Built, tmp_path: Path) -> None:
+    """FR-57 records in each unit's transaction: one covariate row per debt item, author_id
+    the introducing commit's author e-mail key, the month t's, tenure null (deferred, Q9)."""
+    workspace = built.workspace(tmp_path / "ws")
+    assert main(["research", "run", str(workspace.run_file(four_units()))],
+                service=workspace.service()) == EXIT_OK
+    store = workspace.store
+    assert rows(store, "SELECT count(*), count(DISTINCT item_id) FROM covariate") == \
+        rows(store, "SELECT count(*), count(DISTINCT item_id) FROM debt_item") == [(15, 15)]
+    assert rows(store, "SELECT count(*) FROM covariate v JOIN debt_item d USING (item_id) "
+                       "JOIN 'commit' c ON c.commit_id = d.introducing_commit_id "
+                       "WHERE v.author_id IS c.author_email_key "
+                       "AND v.month = substr(d.introduced_at, 1, 7) "
+                       "AND v.account_tenure_days IS NULL AND v.author_id IS NOT NULL") == [(15,)]
+
+
+def test_a_failure_while_storing_covariates_rolls_the_whole_unit_back(
+    built: Built, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NFR-08 for FR-57: a covariate row the store rejects (simulated: an author_id that is
+    not a key, which the frozen schema refuses) rolls back unit 3 whole, FX-PAIRS's history
+    included; units 1 and 2 keep theirs; the resumed run then stores every row once."""
+    workspace = built.workspace(tmp_path / "ws")
+    original = unit_run.CovariateExtractor.extract
+
+    def broken(self, introduction):
+        found = original(self, introduction)
+        if introduction.path.startswith("pairs/"):
+            return dataclasses.replace(found, author_id="not-a-key")
+        return found
+
+    monkeypatch.setattr(unit_run.CovariateExtractor, "extract", broken)
+    with pytest.raises(IntegrityError):
+        start(workspace, four_units())
+    store = workspace.store
+    assert rows(store, "SELECT count(*) FROM unit") == [(2,)]
+    assert rows(store, "SELECT url FROM repository") == [(FX_RG1_URL,)]
+    assert rows(store, "SELECT count(*) FROM debt_item WHERE path LIKE 'pairs/%'") == [(0,)]
+    for table in ("covariate", "base_rate"):
+        assert rows(store, f"SELECT count(*) FROM {table}") == \
+            rows(store, "SELECT count(*) FROM debt_item"), table
+    assert rows(store, "SELECT count(*) FROM unit_summary") == [(8,)]
+    assert not list(workspace.clones.iterdir())
+    monkeypatch.setattr(unit_run.CovariateExtractor, "extract", original)
+    start(workspace, four_units())
+    assert rows(store, "SELECT count(*), count(DISTINCT item_id) FROM covariate") == [(15, 15)]
+    assert rows(store, "SELECT count(*), min(status) FROM unit") == [(4, "complete")]
+
+
+def run_cli(workspace: Workspace, run_file: Path) -> int:
+    """Run ``run_file`` through the command line."""
+    return main(["research", "run", str(run_file)], service=workspace.service())
+
+
+def assert_refused(code: int, err: str) -> None:
+    """The run was refused through the unresolved-code path (decision R4.3)."""
+    assert code == cli.EXIT_UNDECIDED
+    assert err.startswith("Error: Research store incomplete\nCause: Run ")
+    assert LEGACY_NOTE in err and cli.PLACEHOLDER_NOTE in err
+
+
+def legacy_workspace(built: Built, root: Path, kind: str, statement: str) -> Workspace:
+    """Return a workspace whose run is complete or resumable, then made invalid."""
+    workspace = built.workspace(root)
+    if kind == "complete":
+        assert run_cli(workspace, workspace.run_file(four_units())) == EXIT_OK
+    else:
+        with pytest.raises(Crash):
+            start(workspace, four_units(), FailAt(2, "completed"))
+    alter(workspace.store, statement)
+    return workspace
+
+
+ABSENT = {
+    "no-lint-cache": lambda ws: shutil.rmtree(ws.paths().lint_cache.parent),
+    "no-lock-folder": lambda ws: shutil.rmtree(ws.paths().lock_directory),
+    "stale-clone": lambda ws: (ws.clones / "tdea-clone-stale").mkdir(parents=True),
+    "nothing-else": lambda ws: (shutil.rmtree(ws.paths().lint_cache.parent),
+                                shutil.rmtree(ws.paths().lock_directory)),
+}
+
+
+@pytest.mark.parametrize("absent", sorted(ABSENT))
+@pytest.mark.parametrize("kind", ["complete", "resumable"])
+def test_a_refused_store_leaves_no_trace_whatever_state_is_absent(
+    kind: str, absent: str, built: Built, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """R3.3, decision A, strict: a complete or resumable run whose completed units lack
+    covariate rows (as a store from Day 7 does) is refused before the lock, the key, the
+    lint cache or the clone folder is touched. With the lint cache missing, the lock folder
+    missing, a leftover clone present or both folders missing, every file and folder under
+    the workspace, and every row, is exactly as before; no run identifier is printed."""
+    workspace = legacy_workspace(built, tmp_path / "ws", kind, "DELETE FROM covariate")
+    ABSENT[absent](workspace)
+    run_file = workspace.run_file(four_units())
+    before = state(workspace)
+    capsys.readouterr()
+    code = run_cli(workspace, run_file)
+    captured = capsys.readouterr()
+    assert_refused(code, captured.err)
+    assert captured.out == ""
+    assert state(workspace) == before
+    assert rows(workspace.store, "SELECT status FROM run") == [
+        ("complete" if kind == "complete" else "running",)]
+
+
+@pytest.mark.parametrize("statement", [
+    "DELETE FROM covariate WHERE item_id = (SELECT min(item_id) FROM covariate)",
+    "DELETE FROM unit_summary WHERE unit_id = (SELECT min(unit_id) FROM unit) AND tau = 0.5",
+    "INSERT INTO unit_summary SELECT unit_id, 0.9, 0, 0, NULL FROM unit "
+    "WHERE unit_id = (SELECT min(unit_id) FROM unit)",
+], ids=["missing-covariate", "missing-summary", "fifth-summary"])
+def test_a_completed_run_with_missing_records_is_refused_not_reported_complete(
+    statement: str, built: Built, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Decision A: a complete run is checked before "already complete"; one missing
+    covariate row, a missing summary or a fifth one refuses it and changes nothing."""
+    workspace = legacy_workspace(built, tmp_path / "ws", "complete", statement)
+    run_file = workspace.run_file(four_units())
+    before = state(workspace)
+    capsys.readouterr()
+    code = run_cli(workspace, run_file)
+    captured = capsys.readouterr()
+    assert_refused(code, captured.err)
+    assert "1 completed unit(s)" in captured.err and captured.out == ""
+    assert state(workspace) == before
+
+
+@pytest.mark.parametrize("cause", ["store-busy", "changed-after-the-read"])
+@pytest.mark.parametrize("kind", ["complete", "resumable"])
+def test_a_store_the_read_only_check_cannot_settle_is_refused_under_the_lock(
+    kind: str, cause: str, built: Built, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Simulated: the read before the lock cannot refuse (the store is busy, or another
+    process wrote the missing records just after it read). The check under the lock still
+    refuses, before the clone folder or the lint cache is touched. Its only trace is the
+    lock itself, which the concurrency guarantee needs: the lock folder and analysis.lock,
+    created when missing and never deleted (lock.py). research.db, the key file and every
+    row stay unchanged; no lint cache and no clone folder appear."""
+    workspace = legacy_workspace(built, tmp_path / "ws", kind, "DELETE FROM covariate")
+    ABSENT["nothing-else"](workspace)
+    if cause == "store-busy":
+        def busy(path):
+            raise OperationalError("SELECT", {}, Exception("database is locked"))
+        monkeypatch.setattr(ResearchStore, "read_only", staticmethod(busy))
+    else:
+        monkeypatch.setattr(ResearchService, "_refuse_incomplete_store",
+                            lambda self, path, run_file: None)
+    run_file = workspace.run_file(four_units())
+    before_files, before_rows = state(workspace)
+    capsys.readouterr()
+    code = run_cli(workspace, run_file)
+    captured = capsys.readouterr()
+    assert_refused(code, captured.err)
+    after_files, after_rows = state(workspace)
+    assert after_rows == before_rows
+    assert {name: after_files[name] for name in after_files if name not in before_files} == {
+        "lock": "folder", "lock/analysis.lock": hashlib.sha256(b"").hexdigest()}
+    assert {name: after_files[name] for name in before_files} == before_files
+
+
+def test_valid_current_stores_pass_the_check(built: Built, tmp_path: Path,
+                                             capsys: pytest.CaptureFixture[str]) -> None:
+    """The check refuses only missing records: a resumed current-format run completes, and
+    starting a complete one again reports it complete and writes nothing to research.db,
+    also with completed units that have no debt item."""
+    workspace = built.workspace(tmp_path / "ws")
+    with pytest.raises(Crash):
+        start(workspace, four_units(), FailAt(2, "completed"))
+    run_file = workspace.run_file(four_units())
+    assert run_cli(workspace, run_file) == EXIT_OK
+    assert rows(workspace.store, "SELECT count(*) FROM unit u WHERE NOT EXISTS (SELECT 1 FROM "
+                                 "debt_item d WHERE d.unit_id = u.unit_id)")[0][0] >= 1
+    before = state(workspace)
+    capsys.readouterr()
+    assert run_cli(workspace, run_file) == EXIT_OK
+    assert "is already complete; nothing to do." in capsys.readouterr().out
+    assert state(workspace) == before
+
+
+@pytest.mark.parametrize("kind", ["complete", "resumable"])
+def test_valid_current_stores_resume_and_complete_with_state_absent(
+    kind: str, built: Built, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With the lint cache and the lock folder missing, a valid resumable run resumes and
+    completes with one covariate row per item, and a valid complete run is reported
+    complete: the read-only check refuses neither."""
+    workspace = built.workspace(tmp_path / "ws")
+    run_file = workspace.run_file(four_units())
+    if kind == "complete":
+        assert run_cli(workspace, run_file) == EXIT_OK
+    else:
+        with pytest.raises(Crash):
+            start(workspace, four_units(), FailAt(2, "completed"))
+    ABSENT["nothing-else"](workspace)
+    capsys.readouterr()
+    assert run_cli(workspace, run_file) == EXIT_OK
+    out = capsys.readouterr().out
+    if kind == "complete":
+        assert "is already complete; nothing to do." in out
+    else:
+        assert ": 2 of 4 units already complete." in out
+    assert rows(workspace.store, "SELECT count(*), min(status) FROM unit") == [(4, "complete")]
+    assert rows(workspace.store, "SELECT count(*), count(DISTINCT item_id) FROM covariate") == [
+        (15, 15)]
+    assert rows(workspace.store, "SELECT status FROM run") == [("complete",)]
+
+
+def test_the_check_before_the_lock_never_creates_a_key_file(
+    built: Built, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With research.db present and the key file missing, the read before the lock has no
+    run to check (a new key would give a new run identifier) and writes nothing: when the
+    lock is then found held, the refusal (exit 3, as before Day 8) leaves no key file."""
+    workspace = built.workspace(tmp_path / "ws")
+    run_file = workspace.run_file(four_units())
+    assert run_cli(workspace, run_file) == EXIT_OK
+    shutil.rmtree(workspace.paths().key_file.parent)
+    before = state(workspace)
+    lock = AnalysisLock(workspace.paths().lock_directory)
+    lock.acquire()
+    try:
+        capsys.readouterr()
+        code = run_cli(workspace, run_file)
+    finally:
+        lock.release()
+    assert code == EXIT_REFUSED
+    assert capsys.readouterr().err.startswith("Error: Another analysis is running\n")
+    assert state(workspace) == before
+
+
+# Test set-up only, in plain sqlite3: leave a genuine hot journal on research.db. A tiny page
+# cache makes SQLite write changed pages into the database file before the commit, after
+# saving the originals in research.db-journal; the process then dies without committing or
+# rolling back, as a killed process would.
+CRASH = """
+import os, sqlite3, sys
+connection = sqlite3.connect(sys.argv[1], isolation_level=None)
+connection.execute('PRAGMA cache_size=10')
+connection.execute('BEGIN IMMEDIATE')
+connection.execute('UPDATE file_change SET hunks = hunks || ?', (' ' * 3000,))
+os._exit(0)
+"""
+
+
+@pytest.mark.parametrize("kind", ["complete", "resumable"])
+def test_a_store_with_a_hot_journal_is_recovered_by_sqlite_then_refused_under_the_lock(
+    kind: str, built: Built, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Residual trace 2, with a genuine hot journal (no simulation), on a disposable copy
+    of an invalid store: the read before the lock cannot read a store that needs recovery,
+    so the check under the lock decides. Opening research.db there lets SQLite roll the
+    journal back; the store is then refused (exit 1) before the clone folder, the lint
+    cache or the job is touched. The committed rows after recovery equal those before the
+    crash, research.db's bytes equal the committed file's again, the journal is gone, and
+    the only other new entries are the approved lock artifact (trace 1)."""
+    legacy = legacy_workspace(built, tmp_path / "legacy", kind, "DELETE FROM covariate")
+    workspace = built.workspace(tmp_path / "copy")  # the disposable copy
+    shutil.copyfile(legacy.store, workspace.store)
+    key = workspace.paths().key_file
+    key.parent.mkdir(mode=0o700)
+    shutil.copyfile(legacy.paths().key_file, key)
+    key.chmod(0o600)
+    shutil.rmtree(workspace.paths().lint_cache.parent)  # the copy has no lock folder either
+    run_file = workspace.run_file(four_units())
+    committed_rows = dump(workspace.store)
+    committed_bytes = hashlib.sha256(workspace.store.read_bytes()).hexdigest()
+    subprocess.run([sys.executable, "-c", CRASH, str(workspace.store)], check=True)
+    journal = Path(f"{workspace.store}-journal")
+    assert journal.is_file() and journal.stat().st_size > 0
+    before = files(workspace)  # research.db now holds uncommitted pages
+    assert before["research.db"] != committed_bytes
+    with pytest.raises(ValueError):  # what the read before the lock meets: it cannot read
+        ResearchStore.read_only(workspace.store)
+    assert files(workspace) == before  # and that attempt changed nothing
+    capsys.readouterr()
+    code = run_cli(workspace, run_file)
+    captured = capsys.readouterr()
+    assert_refused(code, captured.err)
+    assert captured.out.startswith("Run identifier: ")  # decided under the lock
+    after = files(workspace)
+    assert not journal.exists()
+    assert after["research.db"] == committed_bytes
+    assert dump(workspace.store) == committed_rows
+    changed = {name for name in before.keys() & after.keys() if before[name] != after[name]}
+    assert changed == {"research.db"}
+    assert set(before) - set(after) == {"research.db-journal"}
+    assert {name: after[name] for name in set(after) - set(before)} == {
+        "lock": "folder", "lock/analysis.lock": hashlib.sha256(b"").hexdigest()}

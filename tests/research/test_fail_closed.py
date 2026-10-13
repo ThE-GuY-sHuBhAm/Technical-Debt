@@ -1,16 +1,18 @@
-"""Fail-closed stops of FR-56 roll back their whole unit (Task 7 Day 7 decision P6).
+"""Fail-closed stops of FR-56 and FR-57 roll back their whole unit (Day 7 P6, Day 8 R4.2).
 
 SYNTHETIC — not CL-03 (run_support doubles). For every fail-closed cause, a run of two
 units on a small synthetic history is checked: unit 1 completes and keeps all its
 records; unit 2 hits the cause and leaves no unit row, debt item, disappearance, item
-mode, base rate or unit summary; the clone is deleted; the error is printed in three
-parts. The FR-56 stops use Day 6's unresolved-code path (the undecided note and
+mode, base rate, unit summary or covariate row; the clone is deleted; the error is printed
+in three parts. The FR-56 and FR-57 stops use Day 6's unresolved-code path (the undecided note and
 placeholder status 1; no exit code is mapped for them), and a CL-03 refusal during a unit
 keeps its agreed exit 3. A commit without a known trace status stops the first unit that
 runs, before anything is stored, because a repository's history is stored with its first
 unit. Two causes Git cannot produce on its own (an unreadable linted version, two changes
-of one path in a commit) are simulated by patching the step that detects them; the tests
-say so. The run row stays "running" after a stop (the documented Day 6 limitation).
+of one path in a commit, and from Day 8 a parent version radon cannot read) are simulated
+by patching the step that detects them; the tests say so. An origin outside the recorded
+history (FR-57, Day 8) is produced by Git: the file's add is dated after the cut-off. The
+run row stays "running" after a stop (the documented Day 6 limitation).
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from make_fx_rg1 import ASHA, JANE, RAVI
 from run_support import (FX_RG1_URL, LocalAccess, SyntheticBulkRules, SyntheticClassifier,
                          SyntheticPackages, Workspace, rows, run_file_text)
 
+from tdea.analyzer.radon_analyzer import RadonAnalyzer
 from tdea.analyzer.research.rg1 import disappearance, unit_run
 from tdea.analyzer.research.rg1.bulk import BulkRulesUnresolved
 from tdea.analyzer.research.rg1.fail_closed import change_inconsistent
@@ -40,7 +43,7 @@ MODULE_LEVEL = '"""Second."""\n\nLABEL = f"second"\n'
 TWO_LAMBDAS = '"""Second."""\n\nPAIR = (lambda: f"left", lambda: f"right")\n'
 WINDOWS = ("{start: 2026-01-01, end: 2026-01-10}", "{start: 2026-02-01, end: 2026-02-10}")
 UNIT_1_COUNTS = {"unit": 1, "debt_item": 1, "disappearance": 1, "item_mode": 4,
-                 "base_rate": 1, "unit_summary": 4}
+                 "base_rate": 1, "unit_summary": 4, "covariate": 1}
 
 
 class UnknownClassifier(SyntheticClassifier):
@@ -232,4 +235,68 @@ def test_simulated_an_inconsistent_file_change_rolls_back_its_unit(
     err = capsys.readouterr().err
     assert code == cli.EXIT_UNDECIDED and err.startswith("Error: Inconsistent file change\n")
     assert "Exit code unresolved for this inconsistent file change" in err
+    assert_only_unit_1(workspace)
+
+
+def second_history(path: Path, add_date: str) -> FixtureRepo:
+    """Unit 1 as in history(); pkg/second.py added without a warning on ``add_date``, then
+    its warning added on 2026-02-05, inside unit 2's window."""
+    repo = FixtureRepo(path)
+    repo.commit("Add first", {"pkg/first.py": FIRST}, author=ASHA,
+                date="2026-01-05T09:00:00+00:00")
+    repo.commit("Fix first", {"pkg/first.py": FIRST.replace('f"first"', '"first"')},
+                author=RAVI, date="2026-01-20T09:00:00+00:00")
+    repo.commit("Add second", {"pkg/second.py": SECOND.replace('f"second"', '"second"')},
+                author=JANE, date=add_date)
+    repo.commit("Warn second", {"pkg/second.py": SECOND}, author=RAVI,
+                date="2026-02-05T10:00:00+00:00")
+    return repo
+
+
+def run_repo(tmp_path: Path, repo: FixtureRepo) -> tuple[int, Workspace]:
+    """Run both windows over ``repo`` with SYNTHETIC — not CL-03 rules."""
+    workspace = Workspace(tmp_path / "ws", LocalAccess({"tdea-fixtures/fx-rg1": repo.path}))
+    workspace.root.mkdir()
+    rules = Rg1Rules(SyntheticClassifier(), SyntheticPackages(("pkg/first.py", "pkg/second.py")),
+                     SyntheticBulkRules(()))
+    text = run_file_text([(FX_RG1_URL, WINDOWS, None)], cutoff="2026-10-01T00:00:00Z")
+    return main(["research", "run", str(workspace.run_file(text))],
+                service=workspace.service(rules)), workspace
+
+
+def test_an_origin_outside_the_recorded_history_rolls_back_its_unit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Q4 and decision B, produced by Git: pkg/second.py's add is dated after the cut-off,
+    so the recorded history never reaches it; no origin is inferred and unit 2 stops whole."""
+    repo = second_history(tmp_path / "repo", "2026-12-01T09:00:00+00:00")
+    code, workspace = run_repo(tmp_path, repo)
+    err = capsys.readouterr().err
+    assert code == cli.EXIT_UNDECIDED and err.startswith("Error: File origin not established\n")
+    assert "pkg/second.py" in err and cli.PLACEHOLDER_NOTE in err
+    assert ("Exit code unresolved for this file origin not established: no source defines "
+            "its exit code.") in err
+    assert_only_unit_1(workspace)
+
+
+def test_simulated_a_parent_radon_cannot_read_rolls_back_its_unit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Simulated (a version Pylint linted is normally readable by radon): radon fails on
+    pkg/second.py's parent version, so D-8 cannot be computed and unit 2 stops whole."""
+    original = RadonAnalyzer.sloc
+
+    def sloc(self, content: bytes) -> int:
+        if b'return "second"' in content:
+            raise SyntaxError("simulated")
+        return original(self, content)
+
+    monkeypatch.setattr(RadonAnalyzer, "sloc", sloc)
+    code, workspace = run_repo(tmp_path, second_history(tmp_path / "repo",
+                                                        "2026-01-25T09:00:00+00:00"))
+    err = capsys.readouterr().err
+    assert code == cli.EXIT_UNDECIDED
+    assert err.startswith("Error: Baseline density not computable\n")
+    assert ("Exit code unresolved for this baseline density not computable: no source "
+            "defines its exit code.") in err
     assert_only_unit_1(workspace)

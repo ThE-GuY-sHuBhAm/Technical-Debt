@@ -45,12 +45,15 @@ FX_RG1_PACKAGES = (
     "pkg/tracked_c.py", "pkg/tracked_d.py", "pkg/bot_pinned.py", "pkg/feature_flags.py",
 ) + tuple(f"pkg/modes/{name}.py" for name in (  # FX-RG1 v3 (Day 7)
     "sweep_item", "bulk_fix", "removed", "deleted", "rewrite", "local", "broken",
-    "artifact", "message_fix", "config_fix", "module_level"))
+    "artifact", "message_fix", "config_fix", "module_level")) + tuple(
+    f"pkg/cov/{name}.py" for name in ("old_name", "alpha", "beta", "gamma"))  # v4 (Day 8)
 FX_PAIRS_PACKAGES = tuple(f"pairs/{name}.py" for name in (
     "a_moved", "b_duplicate", "c_two_scopes", "d_whitespace", "e_added_modified_untouched"))
 BOT_SUBJECTS = ("Pin versions",)  # FX-RG1 v2's dependency-bot commit that adds a warning
 BULK_SUBJECTS = ("SYNTHETIC bulk message: fix the message module",)  # FX-RG1 v3, a3
 BULK_CONFIG_PATHS = ("lint.cfg",)  # FX-RG1 v3, a1
+AI_SUBJECTS_V4 = ("Add the old name module",)  # FX-RG1 v4 (Day 8): an AI-labelled origin
+BOT_SUBJECTS_V4 = ("Add generated beta", "Bump alpha pins")  # FX-RG1 v4: bot-labelled
 
 
 def _version(what: str) -> ListVersion:
@@ -139,11 +142,18 @@ class LocalAccess:
         return self.sources[repository.full_name]
 
 
-def synthetic_rules(bots: Iterable[str] = BOT_SUBJECTS) -> Rg1Rules:
-    """Return SYNTHETIC — not CL-03 rules for FX-RG1 v2 and v3 and FX-PAIRS."""
-    return Rg1Rules(SyntheticClassifier({subject: TraceStatus.BOT for subject in bots}),
+def synthetic_rules(bots: Iterable[str] = BOT_SUBJECTS, ai: Iterable[str] = ()) -> Rg1Rules:
+    """Return SYNTHETIC — not CL-03 rules for FX-RG1 v2 to v4 and FX-PAIRS."""
+    labels = {subject: TraceStatus.BOT for subject in bots}
+    labels.update({subject: TraceStatus.AI_TRACED for subject in ai})
+    return Rg1Rules(SyntheticClassifier(labels),
                     SyntheticPackages(FX_RG1_PACKAGES + FX_PAIRS_PACKAGES),
                     SyntheticBulkRules())
+
+
+def synthetic_rules_v4() -> Rg1Rules:
+    """Return SYNTHETIC — not CL-03 rules with FX-RG1 v4's AI and bot labels (Day 8)."""
+    return synthetic_rules(BOT_SUBJECTS + BOT_SUBJECTS_V4, AI_SUBJECTS_V4)
 
 
 class TickingClock:

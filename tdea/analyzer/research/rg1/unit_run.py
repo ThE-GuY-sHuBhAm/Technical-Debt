@@ -12,10 +12,10 @@ for each, the parent and new versions of its changed package .py files, linted a
 through the lint cache (FR-51, NFR-25); introductions (FR-53, IntroductionDetector); and
 the tracking of every introduced item (FR-55, ItemTracker); for every item that
 disappears, its mode at each tau with all signals (FR-56, DisappearanceClassifier); every
-item's base rate (FR-56, base_rate); and the unit's summary at each tau (Task 7 Day 7).
-Covariate records (FR-57) follow on Day 8. Nothing is written here: the aggregator
-stores a unit's outcome in one transaction, and a fail-closed stop of FR-56 is raised
-before it, so nothing of that unit is stored.
+item's base rate (FR-56, base_rate); the unit's summary at each tau (Task 7 Day 7); and
+every item's covariates (FR-57, CovariateExtractor, Task 7 Day 8). Nothing is written
+here: the aggregator stores a unit's outcome in one transaction, and a fail-closed stop
+of FR-56 or FR-57 is raised before it, so nothing of that unit is stored.
 
 Run control readings (Task 7 Day 6 report):
 
@@ -45,6 +45,7 @@ from typing import Protocol
 from tdea.analyzer.research.profile import LintCachePort, LintResult, ResearchProfile
 from tdea.analyzer.research.rg1.base_rate import BaseRate, base_rate
 from tdea.analyzer.research.rg1.bulk import BulkRules
+from tdea.analyzer.research.rg1.covariates import CovariateExtractor, Covariates
 from tdea.analyzer.research.rg1.disappearance import (Disappearance, DisappearanceClassifier,
                                                       UnitSummary, unit_summaries)
 from tdea.analyzer.research.rg1.fail_closed import provenance_unknown
@@ -192,12 +193,13 @@ class UnitWindow:
 
 @dataclass(frozen=True)
 class TrackedItem:
-    """One introduced item, its FR-55 tracking and its FR-56 disappearance and base rate."""
+    """One introduced item, its FR-55 tracking, FR-56 records and FR-57 covariates."""
 
     introduction: Introduction
     tracking: Tracking
     disappearance: Disappearance | None = None  # None while the item has no c1
     base_rate: BaseRate | None = None
+    covariates: Covariates | None = None
 
 
 @dataclass(frozen=True)
@@ -283,7 +285,7 @@ class RepositorySession:
             self._select(window)
 
     def run_unit(self, window: UnitWindow, w_months: int) -> UnitOutcome:
-        """Analyse one unit: selection, lint, introductions, tracking, modes, base rates.
+        """Analyse one unit: introductions, tracking, modes, base rates and covariates.
 
         A commit of the history without a known trace status stops the unit first (fail
         closed, Day 7 reading R5): the history is stored with a repository's first unit,
@@ -308,13 +310,16 @@ class RepositorySession:
         classifier = DisappearanceClassifier(
             self._source, self._bulk_rules,
             {commit.sha: commit for commit in self.record.commits})
+        extractor = CovariateExtractor(self.record.commits, self._source, self.record.cutoff,
+                                       w_months)
         items = []
         for introduction in introductions:
             tracking = tracker.track(introduction, self._chain, w_months, self.record.cutoff)
             disappearance = (classifier.classify(introduction, tracking)
                              if tracking.c1_sha is not None else None)
             items.append(TrackedItem(introduction, tracking, disappearance,
-                                     base_rate(introduction, self.record.commits, w_months)))
+                                     base_rate(introduction, self.record.commits, w_months),
+                                     extractor.extract(introduction)))
         bounds = Window(window.start, window.end)
         after_cutoff = sum(1 for excluded in self._history.excluded
                            if bounds.contains(excluded.committed_at))
