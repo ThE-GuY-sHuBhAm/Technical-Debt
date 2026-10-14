@@ -1,10 +1,15 @@
-"""RE-15 (FR-59), Day 3 part: code extraction and prepare_module parity.
+"""RE-15 (FR-59): code extraction and prepare_module parity (Day 3 part, Day 9 part).
 
 Steps: 1) evaluate the six outputs; 2) read status and inserted range; 3) check that the
 variant file is unchanged; 4) prepare each output as the harness does and compare text
 and SHA-256. Expected module texts are written out by hand from the fixture, and the tree
 hash is checked against the files of a materialised executed tree hashed independently
 here. Outputs are inert text: nothing is imported or run (NFR-26).
+
+Day 9 adds the same steps through the bundle: FX-RG10's six extraction outputs are loaded
+by the BundleLoader and evaluated by evaluate_bundle, the bundle stays byte-identical, and
+every untampered execution record (made by the harness stand-in) carries the module and
+tree SHA-256 that TDEA's evaluation rebuilds.
 """
 
 from __future__ import annotations
@@ -15,11 +20,14 @@ import io
 import os
 from pathlib import Path
 
+import make_fx_rg10
 import pytest
 from rg10_extraction import (CLASS_MARKER, COUNT, DISCOUNTED, MODULE_MARKER, OUTPUTS,
                              TARGET_MODULE, VARIANT_MODULE)
 from rg10_harness_side import BundleTask, harness_prepare, materialise
 
+from tdea.analyzer.research.rg10.bundle import BundleLoader
+from tdea.analyzer.research.rg10.execution import evaluate_bundle
 from tdea.analyzer.research.rg10.prepare import (
     PREPARE_MODULE_VERSION, ExtractionStatus, prepare_module, tree_sha256)
 
@@ -182,4 +190,46 @@ def test_symbolic_links_in_the_tree_are_refused(bundle: Path) -> None:
     with pytest.raises(ValueError, match="symbolic links"):
         tree_sha256(task.variant, TARGET_MODULE, EXPECTED["one_python"][1],
                     bundle / "tests" / task.task_id, task.task_id)
-        
+
+
+# --- Day 9: the same steps through FX-RG10 and evaluate_bundle --------------------------
+
+@pytest.mark.parametrize("name", list(OUTPUTS))
+def test_bundle_evaluation_gives_the_extraction_results(fx_rg10: make_fx_rg10.FxRg10,
+                                                        name: str) -> None:
+    """Steps 1-2 through the bundle: status, range, added lines and the module's SHA-256."""
+    found = {evaluation.gen_id: evaluation
+             for evaluation in evaluate_bundle(BundleLoader().load(fx_rg10.path))}
+    evaluation = found[make_fx_rg10.GEN_IDS[name]]
+    status, text, span = EXPECTED[name]
+    assert (evaluation.extraction_status, evaluation.inserted_range) == (status.value, span)
+    assert evaluation.n_added_lines == (0 if span is None else span[1] - span[0] + 1)
+    assert evaluation.module_sha256 == (
+        None if text is None else hashlib.sha256(text.encode("utf-8")).hexdigest())
+    if text is None:  # D-17: no module, so nothing to parse or hash, and both suites fail
+        assert (evaluation.parses, evaluation.tree_sha256) == (None, None)
+        assert (evaluation.match.insertable, evaluation.match.suite_result_source) == (
+            False, "rule")
+
+
+def test_bundle_evaluation_leaves_the_bundle_unchanged(fx_rg10: make_fx_rg10.FxRg10) -> None:
+    """Step 3 through the bundle: every variant and output file is byte-identical after."""
+    before = make_fx_rg10.snapshot(fx_rg10.path)
+    evaluate_bundle(BundleLoader().load(fx_rg10.path))
+    assert make_fx_rg10.snapshot(fx_rg10.path) == before
+
+
+def test_harness_records_carry_tdeas_hashes(fx_rg10: make_fx_rg10.FxRg10) -> None:
+    """Step 4 through the bundle: each untampered record has TDEA's module and tree SHA-256."""
+    found = {evaluation.gen_id: evaluation
+             for evaluation in evaluate_bundle(BundleLoader().load(fx_rg10.path))}
+    tampered = {make_fx_rg10.GEN_IDS[case.label] for case in make_fx_rg10.CASES if case.tamper}
+    records = make_fx_rg10.read_jsonl(fx_rg10.path / "execution.jsonl")
+    checked = [record["gen_id"] for record in records if record["gen_id"] not in tampered]
+    assert len(checked) == 9
+    for record in records:
+        if record["gen_id"] not in tampered:
+            evaluation = found[str(record["gen_id"])]
+            assert (record["module_sha256"], record["tree_sha256"]) == (
+                evaluation.module_sha256, evaluation.tree_sha256)
+            assert record["prepare_module_version"] == PREPARE_MODULE_VERSION
