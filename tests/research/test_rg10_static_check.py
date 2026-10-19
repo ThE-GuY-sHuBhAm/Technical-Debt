@@ -3,18 +3,23 @@
 Each case builds a modified module with prepare_module from a small variant module and a
 one-block output, then checks it. The new-import and redefinition definitions are Day 9
 decision D9-5's provisional ones; these tests pin their documented boundaries and
-limitations, not a validated measure. Modules are only parsed: nothing is imported or run
-(NFR-26). Python 3.11 only, like the rest of tests/research (NFR-24).
+limitations, not a validated measure. A module may start with a byte-order mark (Day 9
+finding A1): Python's own reading of the module as a UTF-8 source file is the reference.
+Modules are only parsed: nothing is imported or run (NFR-26). Python 3.11 only, like the
+rest of tests/research (NFR-24).
 """
 
 from __future__ import annotations
 
 import ast
+import hashlib
 import warnings
+from pathlib import Path
 
 import pytest
 
-from tdea.analyzer.research.rg10.prepare import PreparedModule, prepare_module
+from tdea.analyzer.research.rg10.prepare import (PreparedModule, prepare_module,
+                                                tree_sha256)
 from tdea.analyzer.research.rg10.static_check import (StaticChecker, StaticResult,
                                                       VariantUnparsable, WrongInterpreter,
                                                       describe)
@@ -170,6 +175,100 @@ def test_warnings_configuration_cannot_change_the_parse() -> None:
             ast.parse(code)
         result = check("# TASK\n", code)
     assert result.parses and result.parse_error is None
+
+
+BOM = "\ufeff"  # a UTF-8 byte-order mark, as decoded text
+
+
+def prepared_with(variant: str, code: str) -> PreparedModule:
+    """Return the modified module that inserting ``code`` after the marker builds."""
+    return prepare_module(variant, MARKER, f"```python\n{code}```\n")
+
+
+def python_reads(text: str) -> bool:
+    """Return True if Python 3.11 parses ``text`` saved as a UTF-8 source file.
+
+    This is the reference: ast.parse of the bytes reads them as Python reads a source
+    file, leaving out a leading UTF-8 signature. Nothing is compiled to code or run.
+    """
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ast.parse(text.encode("utf-8"))
+    except SyntaxError:
+        return False
+    return True
+
+
+def test_a_module_starting_with_one_bom_parses_as_python_reads_it() -> None:
+    """A1: one leading U+FEFF is the UTF-8 signature, which Python leaves out of a file."""
+    variant = BOM + "import os\n# TASK\n"
+    prepared = prepared_with(variant, "VALUE = 1\n")
+    result = StaticChecker().check(variant, prepared)
+    assert (result.parses, result.parse_error) == (True, None)
+    assert python_reads(prepared.text or "")
+
+
+def test_a_bom_module_still_flags_a_new_import() -> None:
+    """A1: the variant is read past its BOM too, so its first-line import os is known."""
+    result = check(BOM + "import os\n# TASK\n", "import json\nimport os\n")
+    assert result.parses and result.new_imports == ("json",)
+
+
+def test_a_bom_variant_still_shows_a_redefinition() -> None:
+    """A1: a definition on the variant's first line, right after the BOM, is found."""
+    result = check(BOM + "def total():\n    pass\n\n\n# TASK\n", "def total():\n    return 1\n")
+    assert result.parses and result.redefinitions == ("total",)
+
+
+@pytest.mark.parametrize("variant, code, error", [
+    pytest.param(BOM + BOM + "import os\n# TASK\n", "VALUE = 1\n", (
+        "SyntaxError: invalid non-printable character U+FEFF (line 1)"), id="two leading BOMs"),
+    pytest.param(BOM + "import os\n# TASK\n", BOM + "VALUE = 1\n", (
+        "SyntaxError: invalid non-printable character U+FEFF (line 3)"),
+                 id="a leading BOM and one inserted"),
+    pytest.param("import os\n# TASK\n", "VALUE = 1\n" + BOM + "OTHER = 2\n", (
+        "SyntaxError: invalid non-printable character U+FEFF (line 4)"),
+                 id="a BOM on a later line"),
+])
+def test_only_one_leading_bom_is_left_out(variant: str, code: str, error: str) -> None:
+    """A1: any other U+FEFF is parsed as written and fails, as it does in a source file."""
+    prepared = prepared_with(variant, code)
+    result = StaticChecker().check(variant, prepared)
+    assert (result.parses, result.parse_error, result.new_imports, result.redefinitions) == (
+        False, error, None, None)
+    assert not python_reads(prepared.text or "")
+
+
+def test_the_bom_stays_in_the_module_text_and_both_hashes(tmp_path: Path) -> None:
+    """A1 changes only what the parser sees: the text, module_sha256 and tree hash keep it."""
+    variant = BOM + "import os\n# TASK\n"
+    prepared = prepared_with(variant, "import json\n")
+    result = StaticChecker().check(variant, prepared)
+    assert result.parses and prepared.text is not None
+    assert prepared.text.startswith(BOM) and prepared.text.count(BOM) == 1
+    raw = prepared.text.encode("utf-8")
+    assert raw.startswith(b"\xef\xbb\xbf")
+    assert result.module_sha256 == prepared.module_sha256 == hashlib.sha256(raw).hexdigest()
+    assert result.module_sha256 != hashlib.sha256(raw[3:]).hexdigest()
+    (tmp_path / "variant").mkdir()
+    (tmp_path / "variant" / "m.py").write_bytes(variant.encode("utf-8"))
+    (tmp_path / "hidden").mkdir()
+    listing = f"m.py\t{result.module_sha256}\n".encode("utf-8")
+    assert tree_sha256(tmp_path / "variant", "m.py", prepared.text, tmp_path / "hidden",
+                       "t") == hashlib.sha256(listing).hexdigest()
+
+
+def test_a_coding_declaration_is_not_interpreted() -> None:
+    """A1 leaves out the BOM only: the text is already UTF-8, so a declaration is not read.
+
+    Python refuses a source file holding a BOM and a latin-1 declaration; TDEA parses the
+    text it decoded as UTF-8. Whether such a module imports is for the harness's record.
+    """
+    variant = BOM + "# -*- coding: latin-1 -*-\nimport os\n# TASK\n"
+    prepared = prepared_with(variant, "VALUE = 1\n")
+    assert StaticChecker().check(variant, prepared).parses
+    assert not python_reads(prepared.text or "")
 
 
 def test_a_variant_module_that_does_not_parse_stops_the_check() -> None:

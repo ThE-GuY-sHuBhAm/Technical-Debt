@@ -18,6 +18,14 @@ recursion while it builds the tree, so a module nested 10,000 levels deep is rec
 not parsing. The traversals below use explicit stacks, so a deep tree that does parse
 cannot exhaust TDEA's own recursion limit.
 
+Byte-order mark (Day 9 finding A1). A module decoded from UTF-8 keeps a leading
+byte-order mark as U+FEFF, which ast.parse refuses in a string, although Python accepts
+it at the start of a source file and leaves it out. So one leading U+FEFF is left out of
+the text given to the parser, and only there: the module text, its SHA-256 and the tree
+hash keep it, and line numbers do not change. A second or later U+FEFF is parsed as
+written, and fails as it would in a source file. Coding declarations are not
+interpreted, because the text is already decoded as UTF-8.
+
 New imports and redefinitions (Day 9 decision D9-5: provisional operational definitions,
 pending the methodology review; not validated):
 
@@ -56,6 +64,7 @@ from tdea.analyzer.research.profile import PYTHON_VERSION
 from tdea.analyzer.research.rg10.prepare import PreparedModule
 
 PARSE_FAILURES = (SyntaxError, ValueError, RecursionError, MemoryError)
+BYTE_ORDER_MARK = "\ufeff"  # the UTF-8 signature, as decoded text
 _DEFINITIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 _STATEMENTS = (ast.stmt, ast.excepthandler, ast.match_case)
 
@@ -111,11 +120,16 @@ class StaticChecker:
 
 
 def parse(text: str) -> tuple[ast.Module | None, str | None]:
-    """Return (tree, None), or (None, parse_error) when ``text`` does not parse."""
+    """Return (tree, None), or (None, parse_error) when ``text`` does not parse.
+
+    One leading byte-order mark is left out of what the parser sees, as Python leaves it
+    out of a source file (A1); ``text`` itself is not changed.
+    """
+    source = text.removeprefix(BYTE_ORDER_MARK)
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            return ast.parse(text), None
+            return ast.parse(source), None
     except PARSE_FAILURES as error:
         return None, describe(error)
 
