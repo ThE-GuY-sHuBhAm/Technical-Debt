@@ -41,7 +41,9 @@ canonical run file.
 
 Failures reach the command line as RunFileInvalid (exit 1) or ResearchRunError, which
 carries the three FR-05 parts and the exit code when one is agreed: 1 for SHAs that
-cannot be selected, 3 for the refusals above and for a changed history (FR-49). Every
+cannot be selected and for an RG10 bundle schema error (BundleInvalid, FR-58; Day 9
+decision D10 maps it here, for when RG10 runs are built), 3 for the refusals above and
+for a changed history (FR-49). Every
 other failure has exit_code None and names its category and the open item blocking its
 code (Day 6 decision 3): CL-15 for a clone, network, disk or file failure (SRS v2.3 exit 4;
 the Specification Freeze has codes 0 to 3 only), CL-19 for a failed accessibility check at
@@ -78,9 +80,10 @@ from tdea.aggregator.run_identity import canonical_text, run_identifier
 from tdea.analyzer.research.engine import (CL15, HistoryChanged, ResearchEngine,
                                            RulesIncomplete, SelectionInvalid, UnitStopped)
 from tdea.analyzer.research.profile import EnvironmentFacts, EnvironmentRefused
+from tdea.analyzer.research.rg10.bundle import BundleInvalid
 
 _AGREED = (EnvironmentRefused, RulesIncomplete, LockUnavailable, HistoryChanged,
-           HistoryMismatch, SelectionInvalid, UnitStopped, StoreIncomplete)
+           HistoryMismatch, SelectionInvalid, UnitStopped, StoreIncomplete, BundleInvalid)
 CLONE_FOLDER = "clones"
 ANOTHER_KIND = "store or lint cache of another kind"
 _Opened = TypeVar("_Opened", bound=AbstractContextManager)

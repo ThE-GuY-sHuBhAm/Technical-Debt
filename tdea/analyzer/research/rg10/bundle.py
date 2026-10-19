@@ -24,7 +24,11 @@ give no basis, so nothing is enforced and the point is open for a decision.
   checked and are not kept.
 * No symbolic link, and no entry other than a regular file or a directory, in the parts
   read: the variants, the tasks' test folders and the output files [R; tree_sha256
-  refuses symbolic links]. A file name that is not UTF-8 is refused [R].
+  refuses symbolic links]. A file name that is not UTF-8 is refused [R]. In a variant or
+  a task's test folder, a file or folder name holding a line break (U+000A) is refused (a
+  new rule, Day 9 decision H1): tree_sha256 hashes "path TAB file-SHA-256" lines, which
+  such a name makes ambiguous, so two different trees could get one hash. The message
+  shows the path with the line break escaped. No other control character is refused.
 * bundle.json [F]: schema_version, bundle_id, harness_version, prepare_module_version,
   env_fingerprint and created_at are required; prepare_module_version must equal
   PREPARE_MODULE_VERSION; env_fingerprint is an object whose "network" is "none" (the key
@@ -54,6 +58,12 @@ give no basis, so nothing is enforced and the point is open for a decision.
 * Markers [F]: a task's marker occurs exactly once in its target module in every variant
   that one of its manifest rows uses (counted as prepare_module counts it, with LF line
   endings); the target module must be a file of that variant and UTF-8 [R].
+* Projects (Day 9 decision D6): a variant has one project (Freeze section 7 gives it one
+  project attribute) [R], taken from the tasks whose manifest rows use it; a variant used
+  by tasks of different projects is refused, naming both tasks (a new rule).
+  variant_projects holds the project of each used variant. A variant no manifest row uses
+  is validated like the others but has no project, so it is left out of variant_projects
+  and is not to be stored.
 * generation.jsonl [R]: each row's gen_id names a manifest row and is unique; the rest of
   the row is kept whole as the output's generation metadata (canonical JSON). The C9 key
   names are not frozen, so no C9 field is checked, and a manifest row without a
@@ -96,6 +106,7 @@ BUNDLE_TEXT_FIELDS = ("schema_version", "bundle_id", "harness_version",
 VariantKey = tuple[str, str, str | None]  # (smell, condition, dose)
 
 _PLAIN_NAME = re.compile(r"[^/\\:\x00-\x1f]+")
+LINE_BREAK = "\n"  # refused in hashed file and folder names (Day 9 decision H1)
 
 
 class BundleInvalid(Exception):
@@ -208,6 +219,7 @@ class LoadedBundle:
     outputs: tuple[OutputSpec, ...]
     records: dict[str, dict[str, object]]  # execution records by gen_id, as read
     modules: dict[tuple[VariantKey, str], str]  # variant module text by (variant, path)
+    variant_projects: dict[VariantKey, str]  # project of each used variant; unused: absent
 
     @property
     def missing_outputs(self) -> tuple[str, ...]:
@@ -252,6 +264,11 @@ def shown(value: str) -> str:
     """Return a bundle ID for a message: quoted, escaped and at most 60 characters."""
     text = ascii(value)
     return text if len(text) <= 60 else text[:57] + "..."
+
+
+def escaped(text: str) -> str:
+    """Return a path for a message with control and non-ASCII characters escaped."""
+    return text.encode("unicode_escape").decode("ascii")
 
 
 def relative_path(value: str) -> PurePosixPath | None:
@@ -399,13 +416,14 @@ class _Reader:
         tasks = self._tasks()
         manifest = self._manifest(tasks, variants)
         modules = self._modules(manifest, tasks, variants)
+        projects = self._projects(manifest, tasks, variants)
         generation = self._generation(manifest)
         records = self._execution(manifest, meta)
         self._folder(OUTPUTS)
         outputs = tuple(self._output(row, generation.get(row.text("gen_id")))
                         for row in sorted(manifest.values(), key=lambda row: row.text("gen_id")))
         return LoadedBundle(self._root, meta, self._mapping, variants, tasks, outputs,
-                            records, modules)
+                            records, modules, projects)
 
     # --- files ----------------------------------------------------------------------
 
@@ -480,12 +498,16 @@ class _Reader:
 
     @staticmethod
     def _regular_or_folder(entry: Path, where: str) -> None:
-        """Refuse a symbolic link, a special file or a name that is not UTF-8."""
+        """Refuse a symbolic link, a special file, a name that is not UTF-8 or a line break."""
         try:
             where.encode("utf-8")
         except UnicodeEncodeError:
             raise BundleInvalid(where.encode("utf-8", "replace").decode("utf-8"), None, None,
                                 "has a file name that is not UTF-8") from None
+        if LINE_BREAK in entry.name:
+            raise BundleInvalid(escaped(where), None, None,
+                                "has a line break (U+000A) in its name, which would make the "
+                                "executed tree's hash ambiguous")
         mode = os.lstat(entry).st_mode
         if stat.S_ISLNK(mode):
             raise BundleInvalid(where, None, None, "is a symbolic link, which a bundle may "
@@ -642,6 +664,26 @@ class _Reader:
                                     f"{count} times in {variant.relative}/{task.target_module}; "
                                     "it must occur exactly once")
         return modules
+
+    @staticmethod
+    def _projects(manifest: dict[str, _Row], tasks: dict[str, TaskSpec],
+                  variants: dict[VariantKey, VariantDir]) -> dict[VariantKey, str]:
+        """Return each used variant's project; refuse one shared by different projects."""
+        users: dict[VariantKey, TaskSpec] = {}
+        for gen_id in sorted(manifest):
+            row = manifest[gen_id]
+            task = tasks[row.text("task_id")]
+            variant = variants[(row.text("smell"), row.text("condition"),
+                                row.optional_name("dose"))]
+            first = users.setdefault(variant.key, task)
+            if first.project != task.project:
+                raise BundleInvalid(TASKS, task.row, "project",
+                                    f"task {shown(task.task_id)} has project "
+                                    f"{shown(task.project)} but shares {variant.relative} "
+                                    f"with task {shown(first.task_id)} of project "
+                                    f"{shown(first.project)}; a variant tree belongs to one "
+                                    "project")
+        return {key: task.project for key, task in users.items()}
 
     def _module(self, task: TaskSpec, variant: VariantDir) -> str:
         """Return the text of the task's target module in ``variant``."""

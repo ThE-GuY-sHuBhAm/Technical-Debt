@@ -233,3 +233,25 @@ def test_harness_records_carry_tdeas_hashes(fx_rg10: make_fx_rg10.FxRg10) -> Non
             assert (record["module_sha256"], record["tree_sha256"]) == (
                 evaluation.module_sha256, evaluation.tree_sha256)
             assert record["prepare_module_version"] == PREPARE_MODULE_VERSION
+
+
+def test_a_line_break_in_a_name_makes_the_tree_hash_ambiguous(tmp_path: Path) -> None:
+    """Why the loader refuses such names (Day 9 decision H1): two trees, one tree_sha256.
+
+    Files x and y, and a single file named "x TAB <hash of x> LF y" holding y's bytes,
+    give the same "path TAB file-SHA-256" lines. tree_sha256 itself is unchanged.
+    """
+    first, second, hidden = tmp_path / "first", tmp_path / "second", tmp_path / "hidden"
+    for folder in (first, second, hidden):
+        folder.mkdir()
+    crafted = "x\t" + hashlib.sha256(b"1").hexdigest() + "\ny"
+    try:
+        (second / crafted).write_bytes(b"2")
+    except OSError:
+        pytest.skip("this file system cannot hold a line break in a name")
+    (first / "x").write_bytes(b"1")
+    (first / "y").write_bytes(b"2")
+    for root in (first, second):
+        (root / "m.py").write_bytes(b"# T\n")
+    hashes = {tree_sha256(root, "m.py", "# T\n", hidden, "t") for root in (first, second)}
+    assert len(hashes) == 1

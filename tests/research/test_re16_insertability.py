@@ -9,7 +9,9 @@ is not checked here, so RE-16 is not passed. "TDEA imports nothing" is checked b
 watching every import, compile, exec and eval call during loading and evaluation, by
 the bundle's own module names staying out of sys.modules, and by the sentinel output's
 file never appearing. The new-import and redefinition definitions are D9-5's
-provisional ones. FX-RG10 is SYNTHETIC.
+provisional ones. Day 9 decision D8 is checked at the end: a module that does not parse
+has import status not_attempted, an output without a module has none, and a record
+written for either is not read beyond its gen_id and fingerprint. FX-RG10 is SYNTHETIC.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from __future__ import annotations
 import ast
 import builtins
 import importlib
+import shutil
 import sys
 from pathlib import Path
 
@@ -24,13 +27,14 @@ import make_fx_rg10
 import pytest
 from make_fx_rg10 import GEN_IDS, SENTINEL_VARIABLE
 
-from tdea.analyzer.research.rg10.bundle import BundleLoader
-from tdea.analyzer.research.rg10.execution import (OK, SHA_MISMATCH, OutputEvaluation,
-                                                   evaluate_bundle)
+from tdea.analyzer.research.rg10.bundle import BundleInvalid, BundleLoader
+from tdea.analyzer.research.rg10.execution import (IMPORT_NOT_ATTEMPTED, OK, SHA_MISMATCH,
+                                                   OutputEvaluation, evaluate_bundle,
+                                                   failed_by_rule)
 
 # label -> (parses, insertable, import status, evaluability, new imports, redefinitions)
 EXPECTED = {
-    "syntax_error": (False, False, None, OK, None, None),
+    "syntax_error": (False, False, IMPORT_NOT_ATTEMPTED, OK, None, None),
     "import_missing": (True, False, "error", OK, ("fx_rg10_absent_dependency",), ()),
     "new_import": (True, True, "ok", OK, ("json",), ()),
     "redefinition": (True, True, "ok", OK, (), ("total",)),
@@ -158,3 +162,59 @@ def test_tdea_imports_runs_and_compiles_nothing(fx_rg10: make_fx_rg10.FxRg10, tm
     assert "shop" not in sys.modules and "shop.orders" not in sys.modules
     assert "fx_rg10_absent_dependency" not in sys.modules
     assert not sentinel.exists() and not (tmp_path / "fx_rg10_sentinel.txt").exists()
+
+
+# --- Day 9 decision D8: outputs that need no record -------------------------------------
+
+def test_import_status_without_a_module_and_for_a_parse_failure(
+        evaluated: dict[str, OutputEvaluation]) -> None:
+    """D8: no module (none, unterminated) gives None; a parse failure gives not_attempted.
+
+    Both fail their suites by rule and stay evaluable.
+    """
+    for label in ("no_block", "unterminated", "only_js"):
+        assert evaluated[label].module_sha256 is None
+        assert evaluated[label].match == failed_by_rule()
+    for label in ("syntax_error", "nested"):
+        assert evaluated[label].module_sha256 is not None
+        assert evaluated[label].match == failed_by_rule(IMPORT_NOT_ATTEMPTED)
+
+
+def with_extra_record(fx_rg10: make_fx_rg10.FxRg10, tmp_path: Path, label: str,
+                      **fields: object) -> Path:
+    """Return a copy of FX-RG10 with one more record, for ``label``'s output."""
+    bundle = shutil.copytree(fx_rg10.path, tmp_path / "copy")
+    records = make_fx_rg10.read_jsonl(bundle / "execution.jsonl")
+    records.append(dict(records[0], gen_id=GEN_IDS[label], module_sha256="0" * 64,
+                        tree_sha256="1" * 64, **fields))
+    make_fx_rg10.write_jsonl(bundle / "execution.jsonl", records)
+    return bundle
+
+
+@pytest.mark.parametrize("label, fields, expected", [
+    pytest.param("syntax_error", {"import_status": "ok"}, IMPORT_NOT_ATTEMPTED,
+                 id="parse failure, record claims ok"),
+    pytest.param("syntax_error", {"import_status": "not_attempted", "tests": None},
+                 IMPORT_NOT_ATTEMPTED, id="parse failure, record not_attempted"),
+    pytest.param("syntax_error", {"tdea_version": 1, "executed_at": None},
+                 IMPORT_NOT_ATTEMPTED, id="parse failure, record malformed"),
+    pytest.param("no_block", {"import_status": "ok"}, None, id="no module, record claims ok"),
+])
+def test_a_record_for_an_output_that_needs_none_is_not_read(
+        fx_rg10: make_fx_rg10.FxRg10, tmp_path: Path, label: str, fields: dict[str, object],
+        expected: str | None) -> None:
+    """D8: wrong hashes, a claimed import or malformed fields change nothing."""
+    bundle = with_extra_record(fx_rg10, tmp_path, label, **fields)
+    found = {evaluation.gen_id: evaluation
+             for evaluation in evaluate_bundle(BundleLoader().load(bundle))}
+    assert found[GEN_IDS[label]].match == failed_by_rule(expected)
+
+
+def test_a_record_for_an_output_that_needs_none_still_needs_the_fingerprint(
+        fx_rg10: make_fx_rg10.FxRg10, tmp_path: Path) -> None:
+    """D8: gen_id and env_fingerprint are checked for every record, so this one refuses."""
+    fingerprint = dict(make_fx_rg10.ENV_FINGERPRINT, memory_limit_mb=2048)
+    bundle = with_extra_record(fx_rg10, tmp_path, "syntax_error", env_fingerprint=fingerprint)
+    with pytest.raises(BundleInvalid) as caught:
+        BundleLoader().load(bundle)
+    assert (caught.value.file, caught.value.field) == ("execution.jsonl", "env_fingerprint")

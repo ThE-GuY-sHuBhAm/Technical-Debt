@@ -11,6 +11,9 @@ These checks need neither Pylint nor a clone, so they run in every CI cell:
   not CL-03 rules of run_support; it is mechanics, not RE-01 evidence.
 * The PAT comes from TDEA_GITHUB_TOKEN or --ask-token, reaches the service and is never
   printed (FR-04, NFR-19); undecided exit codes are reported as such (decision 3).
+* An RG10 bundle schema error (BundleInvalid, FR-58) takes the agreed error path: three
+  parts and exit 1 (Day 9 decision D10). RG10 runs are not built yet, so the error is
+  raised from the rule-list check in its place; this checks the mapping only.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from tdea.aggregator.run_file import Problem, RunFileInvalid
 from tdea.analyzer.research import engine
 from tdea.analyzer.research.engine import ResearchEngine
 from tdea.analyzer.research.profile import EnvironmentFacts
+from tdea.analyzer.research.rg10.bundle import BundleInvalid
 from tdea.api import cli
 from tdea.api.cli import EXIT_INVALID_INPUT, EXIT_OK, EXIT_REFUSED, main
 from tdea.git_handler import github_client, local_repository
@@ -83,6 +87,31 @@ def test_cl03_refuses_every_real_run_before_lock_clone_or_write(
     assert "CL-03" in cause and "incomplete" in cause and "FR-54" in cause
     assert "bulk_config_files and bulk_message_patterns" in cause and "FR-56 a1, a3" in cause
     assert action.startswith("Action: Run research only")
+    assert files_in(workspace.root) == ["run.yaml"]
+
+
+def test_a_bundle_schema_error_exits_1_through_the_agreed_path(
+    workspace: Workspace, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """D10: BundleInvalid reaches the command line as three parts and exit 1, writing nothing."""
+    tripwires(monkeypatch)
+    error = BundleInvalid("variants/T1/clean/shop/orders.py", None, None,
+                          "does not parse under Python 3.11 (SyntaxError: invalid syntax "
+                          "(line 31)), so new imports and redefinitions cannot be determined")
+
+    def refuse(_engine: ResearchEngine) -> None:
+        """Raise the bundle error where a real RG10 run would meet it."""
+        raise error
+
+    monkeypatch.setattr(ResearchEngine, "check_rules", refuse)
+    run_file = workspace.run_file(schema_example())
+    service = ResearchService(ResearchEngine(), paths=workspace.paths(),
+                              environment=PINNED_FACTS)
+    assert main(["research", "run", str(run_file)], service=service) == EXIT_INVALID_INPUT == 1
+    err_type, cause, action = capsys.readouterr().err.splitlines()
+    assert err_type == "Error: RG10 bundle invalid"
+    assert cause == f"Cause: {error.cause}"
+    assert action == f"Action: {BundleInvalid.action}"
     assert files_in(workspace.root) == ["run.yaml"]
 
 

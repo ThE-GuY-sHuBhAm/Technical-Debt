@@ -3,9 +3,10 @@
 TDEA never runs a test or imports a module (NFR-26, Freeze Decision 1): the research
 harness executes each parsing module and writes an execution record, and TDEA checks
 that record against the module it rebuilt itself. This module applies FR-59's
-insertability rule and FR-60's outcome rules, in memory. It stores nothing and decides
-no exit code: storing the records and ending the run "complete with exclusions" belong to
-the RG10 unit, which waits for Day 9 decisions D9-1 and D9-4 (Option B).
+insertability rule and FR-60's outcome rules, in memory. It stores nothing, and its only
+exit code is BundleInvalid's 1 for a used variant module that does not parse (below):
+storing the records and ending the run "complete with exclusions" belong to the RG10
+unit, which waits for Day 9 decisions D9-1 and D9-4 (Option B).
 
 evaluate_bundle() takes a LoadedBundle and returns one OutputEvaluation per output, in
 gen_id order: prepare_module rebuilds the module (FR-59, D-16, D-17); StaticChecker parses
@@ -16,9 +17,11 @@ Rules. [F] is frozen text; [R] a provisional reading needed to apply it.
 
 * A missing output (FR-58) is unevaluable, "missing output"; nothing else is recorded.
 * Extraction status none or unterminated: no module, non-insertable, both suites fail
-  with source "rule", no record needed (D-17) [F]. A module that does not parse: the
-  same (FR-59, FR-60) [F]. Such outputs are evaluable ("ok") [R], and a record the
-  harness wrote for one anyway is not read [R].
+  with source "rule", no record needed (D-17) [F]; its import status is None. A module
+  that does not parse: the same (FR-59, FR-60) [F], with import status not_attempted,
+  since nothing can import it (Day 9 decision D8). Such outputs are evaluable ("ok")
+  [R], and a record the harness wrote for one anyway is not read beyond the bundle-level
+  checks of its gen_id and env_fingerprint (BundleLoader) [R; D8].
 * A parsing module (FR-59, Freeze section 9) [F] is unevaluable when its record is
   missing ("missing execution"), when its module_sha256 or tree_sha256 differs from
   TDEA's ("SHA mismatch"), when its python_version does not start with "3.11." ("Python
@@ -29,8 +32,15 @@ Rules. [F] is frozen text; [R] a provisional reading needed to apply it.
   with import_status ok, tests not a list of {suite, test_id, outcome, duration_s} with
   suite hidden or project, a non-empty test_id, an outcome of pass, fail, error or
   timeout and a duration that is null or a number >= 0; with import_status error, tests
-  present and not empty. Other keys are not read; executed_at, harness_version and
-  tdea_version are recorded by the harness and not checked here.
+  present and not empty; executed_at, harness_version or tdea_version absent or not a
+  string (Day 9 decision D7). The record table types every field, so every field is
+  required with its type; values are compared only where the table says so (the two
+  hashes, python_version, prepare_module_version); a compared field that is missing or
+  mistyped fails its comparison (so a missing hash is "SHA mismatch"), and gen_id and
+  env_fingerprint are checked by the BundleLoader. The three "Recorded" fields are
+  required strings, never compared: a tdea_version other than this TDEA's is valid, and
+  executed_at is not parsed as a date. Other keys are not read. The store has no column
+  for tdea_version yet; it is checked here, not stored (a persistence decision).
 * Otherwise the output is evaluable. Insertable = import_status ok [F]. A non-insertable
   output fails both suites with source "rule" and records no test outcome [F].
 * For an insertable output, the record's hidden and project test IDs must equal the
@@ -41,6 +51,11 @@ Rules. [F] is frozen text; [R] a provisional reading needed to apply it.
   suite passes only if every one of its tests passed [F]; a suite with no declared tests
   passes [R].
 * Test outcomes are ordered by suite, then test ID (their primary key) [R].
+* Before any output is evaluated, every variant module a manifest row uses is parsed, in
+  the order of its path; the first that does not parse refuses the bundle with
+  BundleInvalid (exit 1), naming the file and the parse error (type, message, line; no
+  source text): without its tree, new imports and redefinitions cannot be determined
+  (FR-59). A variant no manifest row uses is not parsed (Day 9 decision D10, a new rule).
 """
 
 from __future__ import annotations
@@ -48,10 +63,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from tdea.analyzer.research.rg10.bundle import LoadedBundle, OutputSpec, TaskSpec
+from tdea.analyzer.research.rg10.bundle import (BundleInvalid, LoadedBundle, OutputSpec,
+                                                TaskSpec)
 from tdea.analyzer.research.rg10.prepare import (PREPARE_MODULE_VERSION, prepare_module,
                                                  tree_sha256)
-from tdea.analyzer.research.rg10.static_check import StaticChecker
+from tdea.analyzer.research.rg10.static_check import StaticChecker, parse
 
 OK = "ok"
 MISSING_OUTPUT = "missing output"
@@ -63,6 +79,7 @@ EVALUABILITY = (OK, MISSING_OUTPUT, MISSING_EXECUTION, SHA_MISMATCH, PYTHON_MISM
                 INCONSISTENT_RECORD)
 IMPORT_OK = "ok"
 IMPORT_ERROR = "error"
+IMPORT_NOT_ATTEMPTED = "not_attempted"
 SUITES = ("hidden", "project")
 OUTCOMES = ("pass", "fail", "error", "timeout")
 PASS = "pass"
@@ -71,6 +88,7 @@ HARNESS = "harness"
 RULE = "rule"
 PYTHON_PREFIX = "3.11."
 TEST_FIELDS = ("suite", "test_id", "outcome", "duration_s")
+RECORDED_FIELDS = ("executed_at", "harness_version", "tdea_version")
 
 
 @dataclass(frozen=True)
@@ -135,7 +153,8 @@ class ExecutionResultMatcher:
     @staticmethod
     def consistent_tests(record: Mapping[str, object]) -> tuple[RecordedOutcome, ...] | None:
         """Return the record's test outcomes, or None if the record is inconsistent."""
-        if record.get("prepare_module_version") != PREPARE_MODULE_VERSION:
+        if (record.get("prepare_module_version") != PREPARE_MODULE_VERSION
+                or not all(isinstance(record.get(name), str) for name in RECORDED_FIELDS)):
             return None
         status = record.get("import_status")
         if status not in (IMPORT_OK, IMPORT_ERROR) or "import_error" not in record:
@@ -204,8 +223,21 @@ def evaluate_bundle(bundle: LoadedBundle,
                     checker: StaticChecker | None = None) -> tuple[OutputEvaluation, ...]:
     """Return every output's evaluation, in gen_id order, without storing anything."""
     checker = StaticChecker() if checker is None else checker
+    check_variant_modules(bundle)
     matcher = ExecutionResultMatcher()
     return tuple(_evaluate(bundle, output, checker, matcher) for output in bundle.outputs)
+
+
+def check_variant_modules(bundle: LoadedBundle) -> None:
+    """Parse every used variant module in path order; refuse the bundle at the first failure."""
+    named = sorted((f"{bundle.variants[key].relative}/{path}", text)
+                   for (key, path), text in bundle.modules.items())
+    for where, text in named:
+        tree, error = parse(text)
+        if tree is None:
+            raise BundleInvalid(where, None, None,
+                                f"does not parse under Python 3.11 ({error}), so new imports "
+                                "and redefinitions cannot be determined")
 
 
 def _evaluate(bundle: LoadedBundle, output: OutputSpec, checker: StaticChecker,
@@ -226,7 +258,7 @@ def _evaluate(bundle: LoadedBundle, output: OutputSpec, checker: StaticChecker,
     tree = tree_sha256(variant.root, task.target_module, prepared.text, task.hidden_tests_dir,
                        task.task_id)
     match = (matcher.match(task, static.module_sha256, tree, bundle.records.get(output.gen_id))
-             if static.parses else failed_by_rule())
+             if static.parses else failed_by_rule(IMPORT_NOT_ATTEMPTED))
     return OutputEvaluation(output.gen_id, prepared.status.value, prepared.inserted_range,
                             prepared.n_added_lines, static.parses, static.parse_error,
                             static.new_imports, static.redefinitions, static.module_sha256,

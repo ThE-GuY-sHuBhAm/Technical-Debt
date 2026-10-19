@@ -7,8 +7,9 @@ the 3.12 record and the missing record make those outputs unevaluable and the ru
 BundleInvalid whose exit code is 1, and the two records make their outputs unevaluable.
 The run itself (``tdea research run`` exiting 1 or 2) needs the RG10 run, which waits for
 Day 9 decisions D9-1 and D9-4 (Option B), so RE-14 is not passed here. The remaining
-tests check each D9-7 rule of bundle.py with a focused damaged copy. FX-RG10 is
-SYNTHETIC; nothing is imported or run (NFR-26).
+tests check each D9-7 rule of bundle.py with a focused damaged copy, and the Day 9
+decisions D6 (one project per variant) and H1 (no line break in a hashed name). FX-RG10
+is SYNTHETIC; nothing is imported or run (NFR-26).
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from make_fx_rg10 import (CASES, DELETED, GEN_IDS, OTHER_VERSION, damaged_copy, 
 
 from tdea.analyzer.research.rg10.bundle import (DEFAULT_SMELL_MAPPING, BundleInvalid,
                                                 BundleLoader, canonical, checked_mapping,
-                                                relative_path, shown)
+                                                escaped, relative_path, shown)
 from tdea.analyzer.research.rg10.execution import (MISSING_EXECUTION, MISSING_OUTPUT, OK,
                                                    PYTHON_MISMATCH, evaluate_bundle)
 from tdea.analyzer.research.rg10.prepare import PREPARE_MODULE_VERSION
@@ -273,6 +274,8 @@ DAMAGES: dict[str, tuple[Change, tuple[str, int | None, str | None]]] = {
     "a repeated task_id": (field("tasks.jsonl", 1, "task_id", "task-1"),
                            ("tasks.jsonl", 2, "task_id")),
     "an empty project": (field("tasks.jsonl", 0, "project", ""), ("tasks.jsonl", 1, "project")),
+    "a variant shared by two projects": (field("tasks.jsonl", 1, "project", "other"),
+                                         ("tasks.jsonl", 2, "project")),
     "an absolute target": (field("tasks.jsonl", 0, "target_module", "/shop/orders.py"),
                            ("tasks.jsonl", 1, "target_module")),
     "a target leaving the variant": (field("tasks.jsonl", 0, "target_module", "../orders.py"),
@@ -584,3 +587,94 @@ def test_a_file_name_that_is_not_utf8_is_refused(fx_rg10: make_fx_rg10.FxRg10,
     error = refusal(bundle)
     assert error.reason == "has a file name that is not UTF-8"
     assert error.file.startswith("variants/T1/clean/")
+
+
+# --- Day 9 decision D6: one project per variant -----------------------------------------
+
+ALL_VARIANTS = tuple((smell, condition, None) for smell in ("T1", "T2")
+                     for condition in ("clean", "injected", "placebo"))
+
+
+def test_a_variant_shared_by_two_projects_names_both_tasks(fx_rg10: make_fx_rg10.FxRg10,
+                                                           tmp_path: Path) -> None:
+    """D6: tasks of different projects cannot share a variant tree; both are named."""
+    bundle = copy(fx_rg10, tmp_path)
+    field("tasks.jsonl", 1, "project", "other")(bundle)
+    assert refusal(bundle).reason == (
+        "task 'task-2' has project 'other' but shares variants/T1/clean with task 'task-1' "
+        "of project 'shop'; a variant tree belongs to one project")
+
+
+def test_each_used_variant_gets_its_tasks_project(fx_rg10: make_fx_rg10.FxRg10) -> None:
+    """D6: every FX-RG10 variant is used, by tasks of project shop."""
+    loaded = BundleLoader().load(fx_rg10.path)
+    assert loaded.variant_projects == {key: "shop" for key in ALL_VARIANTS}
+
+
+def test_an_unused_variant_is_validated_but_gets_no_project(fx_rg10: make_fx_rg10.FxRg10,
+                                                            tmp_path: Path) -> None:
+    """D6: a variant no manifest row uses is checked like the others but is not to be stored.
+
+    It has no project to take, so it stays out of variant_projects; a damaged one is still
+    refused.
+    """
+    bundle = copy(fx_rg10, tmp_path)
+    for condition in ("clean", "placebo", "injected"):
+        shutil.copytree(bundle / "variants" / "T1" / condition,
+                        bundle / "variants" / "T3" / condition)
+    loaded = BundleLoader().load(bundle)
+    assert ("T3", "clean", None) in loaded.variants
+    assert sorted(loaded.variant_projects) == sorted(ALL_VARIANTS)
+    shutil.rmtree(bundle / "variants" / "T3" / "placebo")
+    assert refusal(bundle).file == "variants/T3"
+
+
+# --- Day 9 decision H1: no line break in a hashed name ----------------------------------
+
+H1_REASON = ("has a line break (U+000A) in its name, which would make the executed tree's "
+             "hash ambiguous")
+
+
+def create_or_skip(path: Path, as_folder: bool) -> None:
+    """Create a file or an empty folder at ``path``, or skip where the OS cannot name it."""
+    try:
+        if as_folder:
+            path.mkdir()
+        else:
+            path.write_bytes(b"x = 1\n")
+    except OSError:
+        pytest.skip("this file system cannot hold this name (Windows refuses control "
+                    "characters in names)")
+
+
+@pytest.mark.parametrize("where, as_folder", [
+    pytest.param("variants/T1/clean/a\nb.py", False, id="variant file"),
+    pytest.param("variants/T1/clean/shop/a\nb", True, id="variant folder"),
+    pytest.param("tests/task-1/a\nb.py", False, id="hidden test file"),
+    pytest.param("tests/task-1/a\nb", True, id="hidden test folder"),
+])
+def test_a_line_break_in_a_hashed_name_is_refused(fx_rg10: make_fx_rg10.FxRg10,
+                                                  tmp_path: Path, where: str,
+                                                  as_folder: bool) -> None:
+    """H1: refused with exit 1, naming the path with the line break escaped."""
+    bundle = copy(fx_rg10, tmp_path)
+    create_or_skip(bundle / where, as_folder)
+    error = refusal(bundle)
+    assert (error.file, error.row, error.field, error.reason) == (
+        where.replace("\n", "\\n"), None, None, H1_REASON)
+    assert error.exit_code == 1
+
+
+@pytest.mark.parametrize("name", [pytest.param("a\tb.txt", id="tab"),
+                                  pytest.param("a\rb.txt", id="carriage return")])
+def test_other_control_characters_are_not_refused(fx_rg10: make_fx_rg10.FxRg10,
+                                                  tmp_path: Path, name: str) -> None:
+    """H1 refuses the line break only; no broader rule is applied."""
+    bundle = copy(fx_rg10, tmp_path)
+    create_or_skip(bundle / "variants" / "T1" / "clean" / name, as_folder=False)
+    assert ("T1", "clean", None) in BundleLoader().load(bundle).variants
+
+
+def test_escaped_names_control_and_non_ascii_characters() -> None:
+    """Messages show a name with its line break and other special characters escaped."""
+    assert escaped("variants/a\nb\t\xe9.py") == "variants/a\\nb\\t\\xe9.py"
