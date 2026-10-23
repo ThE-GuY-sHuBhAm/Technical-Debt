@@ -1,7 +1,7 @@
 """Workbook v1.2 cases checked through the REST API and tdea.db, without a browser.
 
-Covered: TC-017, TC-018, TC-020 to TC-024 and TC-032 (clone, history and clean-up),
-TC-030, TC-031 (checkout), TC-055 to TC-066 (persistence, queries, cache, audit),
+Covered: TC-017 to TC-024 and TC-032 (clone, a connection lost mid-clone, history,
+clean-up), TC-030, TC-031 (checkout), TC-055 to TC-066 (persistence, queries, cache, audit),
 TC-103 to TC-105 and TC-107 to TC-110 (exports), TC-114 and TC-120 (comparison),
 TC-125 (API response time), TC-127 to TC-130 and TC-133 (reliability and error
 quality), TC-015 and TC-141 (token not stored). Every analysis goes through the real
@@ -29,10 +29,12 @@ import io
 import json
 import os
 import signal
+import socket
 import sqlite3
 import statistics
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -186,6 +188,119 @@ def test_tc032_temporary_clone_is_gone_after_the_analysis(ws: Workspace) -> None
     """TC-032: after the analyses complete, the temporary folder holds no clone."""
     assert ws.sources.clones  # analyses did clone into the workspace
     left = [path.name for path in (ws.root / "ws").iterdir()
+            if path.name not in ("tdea.db", AUDIT_FILE, "lock")
+            and not path.name.startswith("tdea.db-")]
+    assert left == []
+
+
+class DroppingRelay:  # pylint: disable=too-few-public-methods
+    """A TCP relay to a git daemon that cuts the connection mid-transfer (TC-019).
+
+    It forwards both directions and closes both sockets once ``limit`` bytes have come
+    back from the server: for the client this is a network connection lost part-way
+    through the clone.
+    """
+
+    def __init__(self, upstream_port: int, limit: int) -> None:
+        """Listen on a free local port."""
+        self.upstream_port, self.limit, self.relayed = upstream_port, limit, 0
+        self.listener = socket.create_server(("127.0.0.1", 0))
+        self.port = self.listener.getsockname()[1]
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def _accept(self) -> None:
+        """Relay each client connection to the daemon."""
+        while True:
+            try:
+                client, _address = self.listener.accept()
+            except OSError:
+                return
+            server = socket.create_connection(("127.0.0.1", self.upstream_port))
+            threading.Thread(target=self._pump, args=(client, server, False),
+                             daemon=True).start()
+            threading.Thread(target=self._pump, args=(server, client, True),
+                             daemon=True).start()
+
+    def _pump(self, source: socket.socket, target: socket.socket, counted: bool) -> None:
+        """Copy bytes from ``source`` to ``target``; drop both when the limit is reached."""
+        try:
+            while data := source.recv(4096):
+                target.sendall(data)
+                if counted:
+                    self.relayed += len(data)
+                    if self.relayed >= self.limit:
+                        break
+        except OSError:
+            pass
+        for connection in (source, target):
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            connection.close()
+
+    def close(self) -> None:
+        """Stop listening."""
+        self.listener.close()
+
+
+CUT = 4096  # bytes of the server's answer before the relay drops the connection
+
+
+def free_port() -> int:
+    """Return a TCP port that is free on 127.0.0.1 now."""
+    with socket.create_server(("127.0.0.1", 0)) as probe:
+        return probe.getsockname()[1]
+
+
+def test_tc019_connection_lost_during_the_clone(tmp_path: Path) -> None:
+    """TC-019: the connection drops mid-clone: status Error, structured, no partial clone.
+
+    The repository (FX-M) is served by `git daemon` through a relay that cuts the
+    connection after 4 KiB of the server's answer, part-way through the pack. The
+    workbook's case disconnects the network during a clone of psf/requests; this is the
+    same failure for git, made repeatable.
+    """
+    exec_path = Path(subprocess.run(["git", "--exec-path"], capture_output=True, text=True,
+                                    check=True).stdout.strip())
+    if not any((exec_path / name).is_file() for name in ("git-daemon", "git-daemon.exe")):
+        pytest.skip("git daemon is not installed with this git")
+    base = tmp_path / "served"
+    fx_m = make_fx_product.build_fx_m(base / "fx-m")
+    git_output(fx_m.path, "gc", "--quiet")
+    pack = sum(path.stat().st_size for path in (fx_m.path / ".git" / "objects" / "pack")
+               .glob("*.pack"))
+    assert pack > 3 * CUT  # the cut comes well before the end of the pack
+    port = free_port()
+    with subprocess.Popen(["git", "daemon", "--reuseaddr", "--export-all",
+                           f"--base-path={base}", "--listen=127.0.0.1", f"--port={port}",
+                           str(base)], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL) as daemon:
+        relay = DroppingRelay(port, CUT)
+        try:
+            deadline = time.monotonic() + 20
+            while subprocess.run(["git", "ls-remote", f"git://127.0.0.1:{port}/fx-m"],
+                                 capture_output=True, check=False).returncode != 0:
+                assert time.monotonic() < deadline, "git daemon did not start"
+                time.sleep(0.2)
+            workspace = tmp_path / "ws"
+            service = local_service(workspace, {
+                "tdea-fixtures/fx-m": f"git://127.0.0.1:{relay.port}/fx-m"})
+            client = create_app(service).test_client()
+            answer = client.post("/api/analyses", json={"url": FX_M_URL})
+            assert answer.status_code == 202
+            assert service.wait(answer.json["repository_id"], 120)
+        finally:
+            relay.close()
+            daemon.terminate()
+            daemon.wait(30)
+    assert relay.relayed >= CUT  # the transfer had started when it was cut
+    overview = client.get(f"/api/repositories/{answer.json['repository_id']}").json
+    assert overview["status"] == ERROR
+    assert overview["error"]["type"] == "Clone failed"
+    assert overview["error"]["cause"] and overview["error"]["action"]
+    assert "Traceback" not in json.dumps(overview["error"])
+    left = [path.name for path in workspace.iterdir()
             if path.name not in ("tdea.db", AUDIT_FILE, "lock")
             and not path.name.startswith("tdea.db-")]
     assert left == []

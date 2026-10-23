@@ -27,11 +27,11 @@ and STATUS columns of the workbook are unchanged. In particular:
 
 | Status | Cases |
 | --- | --- |
-| Passed | 122 |
+| Passed | 123 |
 | Passed (gate) | 5 |
 | Automated, opt-in | 1 |
 | Partly met | 7 |
-| Not executed | 10 |
+| Not executed | 9 |
 | **Total** | **145** |
 
 ## Cases
@@ -56,7 +56,7 @@ and STATUS columns of the workbook are unchanged. In particular:
 | TC-016 | ERROR MESSAGE | FR-05 | Passed | browser |  |
 | TC-017 | REPOSITORY CLONE | FR-06 | Passed | backend | TDEA has no debug mode, so the test reads the clone where analysis begins, through a wrapped analyzer |
 | TC-018 | REPOSITORY CLONE | FR-06 | Passed | backend | As TC-017 |
-| TC-019 | REPOSITORY CLONE | FR-06, FR-10 | Not executed |  | Needs the network cut during a real GitHub clone. Clean-up after a forced mid-clone failure is unit-tested (tests/product/test_local_repository.py) |
+| TC-019 | REPOSITORY CLONE | FR-06, FR-10 | Passed | backend | FX-M is served by `git daemon` through a relay that drops the connection after 4 KiB of the pack; the workbook disconnects the network during a clone of psf/requests |
 | TC-020 | COMMIT HISTORY - HASH | FR-07 | Passed | backend |  |
 | TC-021 | COMMIT HISTORY - MESSAGE | FR-07 | Passed | backend |  |
 | TC-022 | COMMIT HISTORY - AUTHOR | FR-07 | Passed | backend |  |
