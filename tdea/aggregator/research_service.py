@@ -337,7 +337,9 @@ class ResearchService:
                 context = RunContext(run_id, run_file, canonical_text(run_file), __version__,
                                      key, fingerprint, metadata, lint_cache=cache,
                                      token=token, clone_root=clones)
-                return ResearchJob(store, self._engine, self._clock, observer).run(context)
+                result = ResearchJob(store, self._engine, self._clock, observer).run(context)
+                observer.lint_cache_used(cache.hits, cache.misses)  # RE-20: hits reported
+                return result
 
     def _key_path(self, path: Path, run_file: RunFile) -> Path:
         """Return the key file: the run file's key_file beside it, else the default."""

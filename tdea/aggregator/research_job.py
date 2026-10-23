@@ -204,6 +204,9 @@ class RunObserver:
     def run_completed(self, run_id: str, total: int, already: bool) -> None:
         """Receive the end of a run; ``already`` if nothing was left to do."""
 
+    def lint_cache_used(self, hits: int, misses: int) -> None:
+        """Receive the lint-cache lookups of an RG1 run: hits and fresh lints (RE-20)."""
+
 
 def plan_units(run_file: RunFile) -> tuple[PlannedUnit, ...]:
     """Return the run's units, one per repository and window, in run-file order."""

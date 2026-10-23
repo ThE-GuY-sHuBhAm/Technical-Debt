@@ -6,7 +6,8 @@ Commands (SRS 4.5.1):
   it is valid, 1 (invalid input) after printing every problem.
 * ``tdea research run RUN_FILE [--ask-token]`` starts the run, or resumes the incomplete
   run with the same identifier. It prints the run identifier first and one line per
-  unit; starting a completed run again does nothing and exits 0. The optional PAT is
+  unit; an RG1 run ends with the lint cache's hits and fresh lints (RE-20); starting a
+  completed run again does nothing and exits 0. The optional PAT is
   read from TDEA_GITHUB_TOKEN, or with --ask-token from a prompt that does not echo; it
   goes to the accessibility check only and is never printed or stored (FR-04, NFR-19).
 * ``tdea research status RUN_FILE`` lists every run in the run file's research store and
@@ -286,6 +287,11 @@ class _Progress(RunObserver):
         else:
             print(f"Run {run_id} complete: {total} of {total} "
                   f"{_plural(total, 'unit', 'units')}.", flush=True)
+
+    def lint_cache_used(self, hits: int, misses: int) -> None:
+        """Report the lint cache's hits and fresh lints for this start of the run (RE-20)."""
+        print(f"Lint cache: {hits} {_plural(hits, 'hit', 'hits')}, {misses} "
+              f"{_plural(misses, 'file', 'files')} linted afresh.", flush=True)
 
 
 def status_lines(found: StoreStatus) -> list[str]:

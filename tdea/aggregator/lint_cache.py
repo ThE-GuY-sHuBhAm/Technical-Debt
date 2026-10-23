@@ -10,6 +10,11 @@ analyzer's LintCachePort, so the analyzer reaches the cache only through that in
 that produced it; any difference in blob, file name or profile hash is a different key.
 An entry is written once and never replaced; a value the constraints refuse is raised.
 The cache holds no author data (Decision 2).
+
+Each LintCache counts its lookups while it is open: ``hits`` (answered from the cache)
+and ``misses`` (not found, so the profile lints the file afresh and stores the result).
+The research run reports both on the console when it ends, so a warm run shows its
+cache hits (RE-20). The counts are not stored anywhere.
 """
 
 from __future__ import annotations
@@ -80,6 +85,8 @@ class LintCache:
     def __init__(self, path: Path | str = DEFAULT_LINT_CACHE) -> None:
         """Open or create the lint cache at ``path``."""
         self._engine = open_sqlite(path, LintCacheBase.metadata, "lint cache")
+        self.hits = 0
+        self.misses = 0
 
     def __enter__(self) -> LintCache:
         """Return the cache for use in a with block."""
@@ -94,7 +101,9 @@ class LintCache:
         with Session(self._engine) as session:
             entry = session.get(LintCacheEntry, (blob_sha, file_name, profile_hash))
             if entry is None:
+                self.misses += 1
                 return None
+            self.hits += 1
             rows = session.scalars(select(LintMessageRow).filter_by(
                 blob_sha=blob_sha, file_name=file_name, profile_hash=profile_hash,
             ).order_by(LintMessageRow.ordinal)).all()
@@ -111,7 +120,9 @@ class LintCache:
                     return
                 _add(session, blob_sha, file_name, profile_hash, result)
         except IntegrityError:
-            if self.get(blob_sha, file_name, profile_hash) is None:
+            with Session(self._engine) as session:
+                stored = session.get(LintCacheEntry, (blob_sha, file_name, profile_hash))
+            if stored is None:
                 raise  # a refused value, not an entry another run wrote at the same moment
 
     def close(self) -> None:
