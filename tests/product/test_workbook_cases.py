@@ -7,11 +7,10 @@ repository) are built here from the case's own description; the module docstring
 each builder says how. Radon and Pylint are the pinned versions; the "radon CLI" and
 "pylint JSON" oracles of TC-034, TC-041 and TC-043 to TC-046 run those tools directly.
 
-The workbook names FX-M and FX-RISK but ships neither, and states only "50 commits" and
-"15 files, 3 of them deliberately complex and smelly". TC-069, TC-073, TC-080 and TC-082
-run on repositories built here to exactly that description (fx_m_files, fx_risk_files),
-not on an official fixture. Not executed here: TC-052 and TC-053 (FX-L, measured in the
-browser) and TC-054 (FX-100, progress values received by the frontend).
+The workbook names FX-M and FX-RISK but ships neither. TC-069, TC-073, TC-080 and TC-082
+run on the versions built by tests/fixtures/make_fx_product.py to the workbook's fixture
+table; whether those are accepted as the official fixtures is the Product Owner's
+decision. TC-052 to TC-054 are in test_workbook_fixture_cases.py (backend part only).
 TC-048 is not run as written: its "empty __init__.py" contradicts TC-051, see
 test_tc048_sloc_zero_file_has_density_zero. The workbook's ACTUAL RESULT and STATUS
 columns are not changed by these tests.
@@ -273,30 +272,12 @@ def test_tc068_min_max_normalisation() -> None:
     assert normalise([100, 150, 200]) == [0.0, 0.5, 1.0]
 
 
-def fx_m_files(number: int) -> dict[str, str]:
-    """Return the files of commit ``number`` (1-50) of the FX-M stand-in.
-
-    One module changes in every commit; its function count, branching and unused imports
-    follow fixed cycles, so SLOC, complexity, MI and smells all vary over the 50 commits.
-    """
-    imports = "".join(f"import {name}\n" for name in ("os", "re", "json")[:number % 4])
-    functions = []
-    for index in range(1 + number % 7):
-        branches = "".join(f"    if value == {level}:\n        return {level}\n"
-                           for level in range(number % 5 + index % 3))
-        functions.append(f"def f{index}(value):\n{branches}    return value\n")
-    return {"fxm/core.py": imports + "\n\n" + "\n\n".join(functions)}
-
-
 @pytest.fixture(name="fx_m", scope="module")
 def _fx_m(tmp_path_factory: pytest.TempPathFactory) -> tuple[AnalysisService, int]:
-    """Build and analyse the FX-M stand-in (50 commits) once for this module."""
+    """Build and analyse FX-M (50 commits) once for this module."""
     root = tmp_path_factory.mktemp("fxm")
-    builder = RepoBuilder(root / "fx-m")
-    builder.commit("Start", {"fxm/__init__.py": '"""FX-M stand-in."""\n', **fx_m_files(1)})
-    for number in range(2, 51):
-        builder.commit(f"Change {number}", fx_m_files(number))
-    service = local_service(root / "ws", {"tdea-fixtures/fx-m": builder.path})
+    fx_m = make_fx_product.build_fx_m(root / "fx-m")
+    service = local_service(root / "ws", {"tdea-fixtures/fx-m": fx_m.path})
     return service, analysed(service, "https://github.com/tdea-fixtures/fx-m").repository_id
 
 
@@ -309,6 +290,14 @@ def test_tc069_all_five_metrics_are_normalised_for_every_commit(fx_m) -> None:
         values = [getattr(row, column) for row in rows]
         assert all(0.0 <= value <= 1.0 for value in values), column
         assert (min(values), max(values)) == (0.0, 1.0), column
+
+
+def test_fx_m_has_mixed_spike_drop_and_stable_changes(fx_m) -> None:
+    """FX-M as the workbook's fixture table describes it: Spike, Drop and Stable changes."""
+    service, repository_id = fx_m
+    classes = {aggregate.classification for _commit, aggregate in
+               service.store.commits(repository_id)}
+    assert {SPIKE, DROP, STABLE} <= classes
 
 
 def test_tc073_every_stored_debt_score_is_within_0_and_100(fx_m) -> None:
@@ -369,27 +358,14 @@ def test_tc081_fewer_than_ten_files(tmp_path: Path) -> None:
     assert all(row["path"] and row["risk_class"] for row in rows)
 
 
-COMPLEX_FILES = ("risk/parser.py", "risk/rules.py", "risk/engine.py")
-
-
-def fx_risk_files() -> dict[str, str]:
-    """Return the FX-RISK stand-in: 12 simple, clean modules and 3 complex, smelly ones."""
-    files = {f"risk/simple_{index:02d}.py": f'"""Simple module {index}."""\n\n\n'
-             f'def value_{index}():\n    """Return {index}."""\n    return {index}\n'
-             for index in range(12)}
-    for rank, path in enumerate(COMPLEX_FILES):
-        branches = "".join(f"    if X == {level}:\n        Y = {level}\n"
-                           for level in range(12 + 4 * rank))
-        files[path] = f"import os\nimport sys\n\n\ndef Check(X):\n{branches}    return Y\n"
-    return files
+COMPLEX_FILES = make_fx_product.RISK_COMPLEX_FILES
 
 
 def test_tc080_tc082_complex_files_rank_first_with_their_dominant_metric(
         tmp_path: Path) -> None:
     """TC-080: 10 rows, the 3 complex files at ranks 1-3. TC-082: dominant metric shown."""
-    builder = RepoBuilder(tmp_path / "fx-risk")
-    builder.commit("Fifteen files", fx_risk_files())
-    service = local_service(tmp_path / "ws", {"tdea-fixtures/fx-risk": builder.path})
+    fx_risk = make_fx_product.build_fx_risk(tmp_path / "fx-risk")
+    service = local_service(tmp_path / "ws", {"tdea-fixtures/fx-risk": fx_risk.path})
     repository_id = analysed(service, "https://github.com/tdea-fixtures/fx-risk").repository_id
     rows = results.high_risk(service.store, repository_id)
     assert len(rows) == 10

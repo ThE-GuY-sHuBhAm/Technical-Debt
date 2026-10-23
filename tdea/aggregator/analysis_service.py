@@ -29,7 +29,8 @@ cooperative: the run stops at the next commit boundary (the progress callback ra
 AnalysisCancelled), or before it starts if it is still queued, so a clone or a Pylint
 process already under way finishes first. The clone is deleted as on any failure
 (FR-10), nothing new is stored, and the repository gets a three-part "Analysis
-cancelled" error.
+cancelled" error. Its audit line records the commits selected for analysis as requested
+and the commits analysed before the stop as processed (TC-067).
 """
 
 from __future__ import annotations
@@ -247,6 +248,11 @@ class AnalysisService:
             self._store.complete(repository_id, run.commits_total, commits, self._clock())
             audit["outcome"] = COMPLETE
         except AnalysisCancelled:
+            with self._state.guard:  # FR-23: how far the run got (TC-067)
+                reached = self._state.progress.get(repository_id)
+            if reached is not None and reached.total:
+                audit.update(commits_requested=reached.total,
+                             commits_processed=reached.processed)
             self._store.fail(repository_id, "Analysis cancelled",
                              "The analysis was cancelled before it finished, so no new "
                              "results were stored.",

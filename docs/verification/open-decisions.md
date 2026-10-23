@@ -35,6 +35,8 @@ in `tdea/aggregator/scoring.py`, `lock.py` (OI-04) and `results.py` (OI-06).
 | Item | Issue | Recommended resolution |
 | --- | --- | --- |
 | TC-048 vs TC-051 / FR-16 | TC-048 expects an empty `__init__.py` to be analysed (density 0.0). TC-051 and FR-16 expect empty .py files to be logged and skipped. TDEA follows FR-16. | Correct TC-048's input to a non-empty file with SLOC 0 (for example a comment-only `__init__.py`). This keeps FR-16 unchanged, but it is a test-record change and needs the workbook owner's approval. The alternative, analysing 0-byte files as SLOC 0, would change FR-16. |
+| TC-033 vs FR-30 | TC-033 expects the status to read 'Cancelled' after Cancel. FR-30 allows only Pending, Running, Complete and Error, so TDEA shows Error with the error type "Analysis cancelled". | Correct TC-033's expected result to "status Error, error type 'Analysis cancelled'" (a test-record change for the workbook owner), or add a Cancelled status to FR-30 (an SRS change). TDEA follows FR-30 until one is approved. |
+| Generated fixtures | The workbook names FX-M, FX-L, FX-XL, FX-100/101/102, FX-RISK, FX-UP and FX-DOWN but ships none. Version 1 of each is now built by `tests/fixtures/make_fx_product.py` to the workbook's fixture table. FX-EMPTY and FX-PRIV must be real GitHub repositories and do not exist. | The Product Owner accepts the generated builds as the official fixtures (or supplies others), and creates an empty and a private repository for FX-EMPTY and FX-PRIV. |
 | SRS 2.4 prerequisites | Git is not listed, although GitPython needs the `git` command. | Add Git to section 2.4 in the next SRS revision (editorial). The README states it meanwhile. |
 
 ## Change request and integration evidence
