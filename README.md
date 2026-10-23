@@ -100,6 +100,9 @@ docker build -t tdea-rg10-sandbox harness/docker
 PYTHONPATH=harness python -m rg10_harness assemble --materials M --generation G --out BUNDLE --bundle-id ID --image tdea-rg10-sandbox
 ```
 
+To check the sandbox on your own machine before any real output runs, follow the
+real-Docker smoke test in [docs/research/rg10-harness-smoke-test.md](docs/research/rg10-harness-smoke-test.md).
+
 ## Develop
 
 ```bash

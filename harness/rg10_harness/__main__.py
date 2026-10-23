@@ -1,4 +1,4 @@
-"""Command line: ``python -m rg10_harness assemble`` (run with harness/ on PYTHONPATH).
+"""Command line: ``python -m rg10_harness assemble|smoke`` (run with harness/ on PYTHONPATH).
 
 Example::
 
@@ -8,9 +8,14 @@ Example::
 
 (the second command on one line).
 
-Exit status: 0 every output with a module was executed and recorded; 4 the bundle was
-written but some outputs got no record because the sandbox gave no valid reply (run again
-for a new bundle); 1 the inputs or the sandbox could not be used, and nothing was written.
+assemble exit status: 0 every output with a module was executed and recorded; 4 the
+bundle was written but some outputs got no record because the sandbox gave no valid reply
+(run again for a new bundle); 1 the inputs or the sandbox could not be used, and nothing
+was written.
+
+``smoke --image IMAGE --workdir DIR`` runs the end-to-end smoke test (rg10_harness.smoke)
+in a new folder DIR: exit 0 every check passed, 1 a check failed or the sandbox could not
+be used. Each check is printed as PASS or FAIL, and DIR/smoke-report.json keeps them.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from pathlib import Path
 
 from rg10_harness.assemble import AssemblyError, assemble
 from rg10_harness.sandbox import DockerSandbox, Limits, SandboxRefused
+from rg10_harness.smoke import run_smoke
 from tdea.analyzer.research.rg10.bundle import BundleInvalid
 
 
@@ -38,11 +44,15 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--out", type=Path, required=True, help="new bundle folder")
     run.add_argument("--bundle-id", required=True)
     run.add_argument("--image", required=True, help="sandbox image (Python 3.11, pytest)")
+    smoke = commands.add_parser("smoke", help="end-to-end smoke test with a real sandbox")
+    smoke.add_argument("--workdir", type=Path, required=True, help="new folder for the test")
+    smoke.add_argument("--image", required=True, help="sandbox image (Python 3.11, pytest)")
     defaults = Limits()
-    run.add_argument("--import-timeout", type=int, default=defaults.import_timeout_s)
-    run.add_argument("--test-timeout", type=int, default=defaults.test_timeout_s)
-    run.add_argument("--cpus", type=float, default=defaults.cpu_limit)
-    run.add_argument("--memory-mb", type=int, default=defaults.memory_limit_mb)
+    for command in (run, smoke):
+        command.add_argument("--import-timeout", type=int, default=defaults.import_timeout_s)
+        command.add_argument("--test-timeout", type=int, default=defaults.test_timeout_s)
+        command.add_argument("--cpus", type=float, default=defaults.cpu_limit)
+        command.add_argument("--memory-mb", type=int, default=defaults.memory_limit_mb)
     return parser
 
 
@@ -51,6 +61,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     limits = Limits(import_timeout_s=args.import_timeout, test_timeout_s=args.test_timeout,
                     cpu_limit=args.cpus, memory_limit_mb=args.memory_mb)
+    if args.command == "smoke":
+        return _smoke(args, limits)
     try:
         report = assemble(args.materials, args.generation, args.out,
                           DockerSandbox(args.image, limits), args.bundle_id)
@@ -64,6 +76,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     for gen_id in report.no_reply:
         print(f"No execution record (no valid sandbox reply): {gen_id}", file=sys.stderr)
     return 4 if report.no_reply else 0
+
+
+def _smoke(args: argparse.Namespace, limits: Limits) -> int:
+    """Run the smoke test and print each check."""
+    try:
+        result = run_smoke(DockerSandbox(args.image, limits), args.workdir,
+                           memory_limit_mb=limits.memory_limit_mb)
+    except (AssemblyError, SandboxRefused, BundleInvalid, FileExistsError) as error:
+        print(f"Smoke test not run: {error}", file=sys.stderr)
+        return 1
+    for name, ok, detail in result.checks:
+        print(f"{'PASS' if ok else 'FAIL'}  {name}" + ("" if ok else f"  ({detail})"))
+    print(f"Fingerprint: {result.report['env_fingerprint']}")
+    print(f"{'All checks passed' if result.passed else 'Some checks FAILED'}; report: "
+          f"{args.workdir / 'smoke-report.json'}")
+    return 0 if result.passed else 1
 
 
 if __name__ == "__main__":

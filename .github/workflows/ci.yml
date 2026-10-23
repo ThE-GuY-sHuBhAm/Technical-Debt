@@ -18,6 +18,10 @@
 # browser          The workbook's browser cases (tests/browser) in headless Chrome with
 #                  Selenium, against a TDEA server on 127.0.0.1 with FR-03 answered by a
 #                  stubbed transport; elsewhere they are skipped, not passed.
+# rg10-docker      The RG10 harness smoke test with real Docker (harness/rg10_harness/
+#                  smoke.py): build the sandbox image, assemble a bundle of hand-written
+#                  outputs and isolation probes in real containers, evaluate it in TDEA.
+#                  Elsewhere the harness is tested with stand-ins for Docker only.
 #
 # Runner images: ubuntu-22.04 is the version TC-143 names (GitHub retires it on
 # 17 Apr 2027). GitHub no longer offers macOS 13 or an x64 Windows 11 image, so
@@ -183,3 +187,31 @@ jobs:
         env:
           TDEA_BROWSER_TESTS: "1"
         run: python -m pytest tests/browser -v -rs --durations=20
+
+  rg10-docker:
+    name: RG10 harness smoke test (real Docker)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install tdea in a virtual environment (NFR-24)
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install -e .
+      - name: Docker on the runner
+        run: docker version
+      - name: Build the sandbox image
+        run: docker build -t tdea-rg10-sandbox harness/docker
+      - name: Smoke test in real containers
+        env:
+          PYTHONPATH: harness
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" -m rg10_harness smoke --image tdea-rg10-sandbox \
+            --workdir "$RUNNER_TEMP/rg10-smoke"
+      - name: Smoke report
+        if: always()
+        run: cat "$RUNNER_TEMP/rg10-smoke/smoke-report.json" || true
