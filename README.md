@@ -112,5 +112,14 @@ This is work in progress on the `sprint-implementation` branch. The product and 
 research engine are implemented and pass the automated tests on fixture repositories;
 none of that is acceptance evidence on its own. Scoring rules that the SRS leaves open
 (OI-01 to OI-06) follow the SRS Appendix B proposals and are marked as provisional in
-the code. Browser automation (Selenium) is out of scope; the browser acceptance cases
-in the test workbook are not executed.
+the code. The browser (Selenium) acceptance cases in the test workbook are **not
+executed**. Taking Selenium automation out of scope is proposed as change request CR-01,
+which is pending approval; until it is approved those cases remain in scope and open.
+
+The FR-03 GitHub check is tested against mocked answers everywhere except the CI job
+"live GitHub API (FR-03)", which runs `tests/product/test_github_live.py` against the
+real api.github.com. To run those tests yourself on a machine that can reach GitHub:
+
+```bash
+TDEA_LIVE_GITHUB=1 python -m pytest tests/product/test_github_live.py -v
+```

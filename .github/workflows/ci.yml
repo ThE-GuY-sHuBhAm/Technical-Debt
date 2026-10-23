@@ -9,6 +9,8 @@
 # quality          NFR-12 per-file Pylint >= 8.0 with the default configuration, all
 #                  files in one run as TC-134 does; NFR-15 pydocstyle.
 # dashboard-guard  Section 6: research commits change nothing under dashboard/.
+# live-github      FR-03/FR-04 against the real api.github.com (tests/product/
+#                  test_github_live.py); elsewhere those tests are skipped, not passed.
 #
 # Runner images: ubuntu-22.04 is the version TC-143 names (GitHub retires it on
 # 17 Apr 2027). GitHub no longer offers macOS 13 or an x64 Windows 11 image, so
@@ -109,3 +111,20 @@ jobs:
           python-version: "3.11"
       - name: Check every commit reachable from HEAD
         run: python tools/check_dashboard_paths.py
+
+  live-github:
+    name: live GitHub API (FR-03)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install tdea with the dev extra
+        run: python -m pip install -e ".[dev]"
+      - name: Real GET /repos/{owner}/{repo}, no token
+        env:
+          TDEA_LIVE_GITHUB: "1"
+        run: python -m pytest tests/product/test_github_live.py -v -rs
