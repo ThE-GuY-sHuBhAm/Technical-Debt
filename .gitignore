@@ -8,6 +8,9 @@ build/
 dist/
 *.egg-info/
 
+# Dashboard sources' installed packages (the build itself is committed)
+dashboard/node_modules/
+
 # Python caches
 __pycache__/
 *.py[cod]

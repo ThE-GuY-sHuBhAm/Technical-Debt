@@ -34,6 +34,11 @@ tdea = "tdea.api.cli:main"
 [tool.setuptools.packages.find]
 include = ["tdea*"]
 
+[tool.setuptools.package-data]
+# The dashboard's production build (npm run build in dashboard/), committed so that a
+# pip-only install serves it without Node.js (CON-06).
+"tdea.api" = ["dashboard/*", "dashboard/assets/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The CI gate scripts in tools/ are not part of the tdea package; their tests import

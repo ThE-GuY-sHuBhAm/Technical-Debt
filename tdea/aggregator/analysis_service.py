@@ -23,6 +23,13 @@ and processed, per-file errors and the outcome; never a token.
 A failure inside the run is stored as the repository's three-part error (status Error);
 earlier results of that repository are kept, since nothing is replaced unless the new
 run completes.
+
+cancel() serves the Cancel button of the Analysis Progress view (SRS 4.1). It is
+cooperative: the run stops at the next commit boundary (the progress callback raises
+AnalysisCancelled), or before it starts if it is still queued, so a clone or a Pylint
+process already under way finishes first. The clone is deleted as on any failure
+(FR-10), nothing new is stored, and the repository gets a three-part "Analysis
+cancelled" error.
 """
 
 from __future__ import annotations
@@ -65,6 +72,10 @@ class SubmissionRefused(Exception):
                    error.action)
 
 
+class AnalysisCancelled(Exception):
+    """The user cancelled a running or queued analysis."""
+
+
 @dataclass(frozen=True)
 class Submission:
     """The answer to one submission: the repository and whether it came from the cache."""
@@ -91,6 +102,7 @@ class _State:
     guard: threading.Lock = field(default_factory=threading.Lock)
     progress: dict[int, Progress] = field(default_factory=dict)
     threads: dict[int, threading.Thread] = field(default_factory=dict)
+    cancelled: set[int] = field(default_factory=set)
 
 
 def _utc_now() -> datetime:
@@ -191,6 +203,16 @@ class AnalysisService:
             found = self._state.progress.get(repository_id)
             return None if found is None else Progress(**vars(found))
 
+    def cancel(self, repository_id: int) -> bool:
+        """Ask the repository's running or queued analysis to stop; False if none runs."""
+        with self._state.guard:
+            thread = self._state.threads.get(repository_id)
+            if (repository_id not in self._state.progress or thread is None
+                    or not thread.is_alive()):
+                return False
+            self._state.cancelled.add(repository_id)
+            return True
+
     def wait(self, repository_id: int, timeout: float | None = None) -> bool:
         """Wait for the repository's background analysis; True when it has finished."""
         with self._state.guard:
@@ -217,12 +239,19 @@ class AnalysisService:
         audit = {"url": repo.url, "started_at": iso_utc(started), "commits_requested": None,
                  "commits_processed": 0, "file_errors": 0}
         try:
+            self._check_cancelled(repository_id)
             run = self._engine.run(repo, sampling_n, self._progress_callback(repository_id))
             commits = stored_commits(run)
             audit.update(commits_requested=len(run.analyses), commits_processed=len(commits),
                          file_errors=sum(item.file_errors for item in commits))
             self._store.complete(repository_id, run.commits_total, commits, self._clock())
             audit["outcome"] = COMPLETE
+        except AnalysisCancelled:
+            self._store.fail(repository_id, "Analysis cancelled",
+                             "The analysis was cancelled before it finished, so no new "
+                             "results were stored.",
+                             "Submit the repository again when you want it analysed.")
+            audit["outcome"] = "Cancelled"
         except ProductError as exc:
             self._store.fail(repository_id, exc.error_type, exc.cause, exc.action)
             audit["outcome"] = f"Error: {exc.error_type}"
@@ -239,11 +268,19 @@ class AnalysisService:
             self._audit(audit)
             with self._state.guard:
                 self._state.progress.pop(repository_id, None)
+                self._state.cancelled.discard(repository_id)
+
+    def _check_cancelled(self, repository_id: int) -> None:
+        """Raise AnalysisCancelled if the user has cancelled this analysis."""
+        with self._state.guard:
+            if repository_id in self._state.cancelled:
+                raise AnalysisCancelled(repository_id)
 
     def _progress_callback(self, repository_id: int
                            ) -> Callable[[int, int, int, str], None]:
         """Return the callback that records FR-18 progress for one repository."""
         def update(percent: int, processed: int, total: int, sha: str) -> None:
+            self._check_cancelled(repository_id)
             with self._state.guard:
                 state = self._state.progress.setdefault(repository_id, Progress())
                 state.percent, state.processed, state.total = percent, processed, total
