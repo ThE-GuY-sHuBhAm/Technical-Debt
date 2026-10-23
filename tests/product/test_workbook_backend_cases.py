@@ -606,7 +606,11 @@ def test_tc127_five_corrupt_files_among_45_valid(tmp_path: Path, caplog) -> None
 
 
 def test_tc128_three_fx_m_runs_give_the_same_csv_md5(ws: Workspace, tmp_path: Path) -> None:
-    """TC-128: FX-M analysed three times from an empty cache; the CSVs' MD5 is equal."""
+    """TC-128: FX-M analysed three times from an empty cache; the CSVs' MD5 is equal.
+
+    With TDEA_TC145_OUT set, the MD5 is also written to that file, so that CI can compare
+    the value of every operating system and Python version (TC-145).
+    """
     digests = [hashlib.md5(ws.client.get(f"/api/repositories/{ws.ids['fx-m']}/export.csv")
                            .data).hexdigest()]
     for number in range(2):
@@ -616,6 +620,8 @@ def test_tc128_three_fx_m_runs_give_the_same_csv_md5(ws: Workspace, tmp_path: Pa
         digests.append(hashlib.md5(client.get(
             f"/api/repositories/{submission.repository_id}/export.csv").data).hexdigest())
     assert len(set(digests)) == 1, digests
+    if os.environ.get("TDEA_TC145_OUT"):
+        Path(os.environ["TDEA_TC145_OUT"]).write_text(digests[0] + "\n", encoding="utf-8")
 
 
 SUBMISSION_FAILURES = [

@@ -11,6 +11,8 @@
 # dashboard-guard  Section 6: research commits change nothing under dashboard/.
 # live-github      FR-03/FR-04 against the real api.github.com (tests/product/
 #                  test_github_live.py); elsewhere those tests are skipped, not passed.
+# tc145            TC-145 / NFR-23: every tests cell writes the MD5 of FX-M's CSV export
+#                  (from the TC-128 test); this job checks that all of them are equal.
 # browser          The workbook's browser cases (tests/browser) in headless Chrome with
 #                  Selenium, against a TDEA server on 127.0.0.1 with FR-03 answered by a
 #                  stubbed transport; elsewhere they are skipped, not passed.
@@ -65,6 +67,8 @@ jobs:
       - name: Console script
         run: tdea research --help
       - name: Test suite with coverage
+        env:
+          TDEA_TC145_OUT: ${{ github.workspace }}/tc145.md5
         run: |
           if [ "${{ matrix.python }}" = "3.11" ]; then
             suite=()
@@ -80,6 +84,26 @@ jobs:
           else
             python tools/coverage_by_package.py coverage.json
           fi
+      - name: FX-M CSV MD5 for TC-145
+        uses: actions/upload-artifact@v4
+        with:
+          name: tc145-${{ matrix.os }}-python-${{ matrix.python }}
+          path: tc145.md5
+          if-no-files-found: error
+
+  tc145:
+    name: same FX-M CSV MD5 on every OS (TC-145)
+    needs: tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tc145-*
+      - name: Compare the MD5 of every cell
+        run: |
+          for folder in tc145-*; do printf '%s  %s\n' "$(cat "$folder/tc145.md5")" "$folder"; done
+          test "$(cat tc145-*/tc145.md5 | sort -u | wc -l)" -eq 1
+          test "$(ls -d tc145-* | wc -l)" -eq 9
 
   quality:
     name: quality gates (Python ${{ matrix.python }})
