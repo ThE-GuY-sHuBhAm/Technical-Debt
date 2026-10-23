@@ -263,7 +263,9 @@ def test_tc019_connection_lost_during_the_clone(tmp_path: Path) -> None:
     """
     exec_path = Path(subprocess.run(["git", "--exec-path"], capture_output=True, text=True,
                                     check=True).stdout.strip())
-    if not any((exec_path / name).is_file() for name in ("git-daemon", "git-daemon.exe")):
+    daemon_program = next((exec_path / name for name in ("git-daemon", "git-daemon.exe")
+                           if (exec_path / name).is_file()), None)
+    if daemon_program is None:
         pytest.skip("git daemon is not installed with this git")
     base = tmp_path / "served"
     fx_m = make_fx_product.build_fx_m(base / "fx-m")
@@ -272,7 +274,9 @@ def test_tc019_connection_lost_during_the_clone(tmp_path: Path) -> None:
                .glob("*.pack"))
     assert pack > 3 * CUT  # the cut comes well before the end of the pack
     port = free_port()
-    with subprocess.Popen(["git", "daemon", "--reuseaddr", "--export-all",
+    # The daemon program itself, not `git daemon`: terminating the `git` wrapper would
+    # leave git-daemon running on Windows.
+    with subprocess.Popen([str(daemon_program), "--reuseaddr", "--export-all",
                            f"--base-path={base}", "--listen=127.0.0.1", f"--port={port}",
                            str(base)], stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL) as daemon:
