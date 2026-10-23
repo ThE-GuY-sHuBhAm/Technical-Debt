@@ -87,13 +87,26 @@ tdea research export --store STORE --out DIR [--format csv|json|jsonl] RUN_ID...
 Run files, exit codes and stores are specified in the SRS (section 4.5) and the Spec
 Freeze. Real RG1 runs are refused until the versioned smell lists exist (CL-03).
 
+### RG10 research harness (not part of TDEA)
+
+TDEA never runs model-generated code (NFR-26). Under the Spec Freeze's Option B, the
+separate research harness in `harness/` does: it builds each modified module with TDEA's
+`prepare_module`, runs the import and the declared tests in a Docker container with no
+network, and assembles the bundle that `tdea research run` evaluates. It does no
+generation. It is not installed with TDEA.
+
+```bash
+docker build -t tdea-rg10-sandbox harness/docker
+PYTHONPATH=harness python -m rg10_harness assemble --materials M --generation G --out BUNDLE --bundle-id ID --image tdea-rg10-sandbox
+```
+
 ## Develop
 
 ```bash
 python -m pip install -e ".[dev]"
 python -m pytest                                    # all tests
 python tools/check_pylint_scores.py --min-score 8.0 # NFR-12 gate
-python -m pydocstyle tdea tests tools               # NFR-15
+python -m pydocstyle tdea tests tools harness       # NFR-15
 python tools/check_dashboard_paths.py               # research commits leave the dashboard alone
 ```
 

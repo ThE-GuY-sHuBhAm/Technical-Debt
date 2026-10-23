@@ -97,7 +97,7 @@ jobs:
       - name: Pylint, default configuration, every file >= 8.0 (NFR-12)
         run: python tools/check_pylint_scores.py --min-score 8.0
       - name: pydocstyle (NFR-15)
-        run: python -m pydocstyle tdea tests tools
+        run: python -m pydocstyle tdea tests tools harness
 
   dashboard-guard:
     name: research commits leave dashboard/ unchanged
