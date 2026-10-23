@@ -8,6 +8,7 @@ Analyses
 Repositories and results (all read from tdea.db; nothing is recomputed, FR-42)
   GET /api/repositories                         every repository (NFR-16)
   GET /api/repositories/<id>                    overview and live progress (FR-30, FR-38)
+  POST /api/repositories/<id>/cancel            stop its running analysis (SRS 4.1)
   GET /api/repositories/<id>/commits            per-commit series (FR-31 to FR-35)
   GET /api/repositories/<id>/commits/<sha>      per-file drill-down (FR-37)
   GET /api/repositories/<id>/high-risk          top ten files (FR-28, FR-36)
@@ -142,6 +143,16 @@ def _overview(repository_id: int) -> dict:
     progress = _service().progress(repository_id)
     body["progress"] = None if progress is None else vars(progress)
     return body
+
+
+@api.post("/repositories/<int:repository_id>/cancel")
+def cancel(repository_id: int):
+    """Ask the repository's running analysis to stop (SRS 4.1, Cancel button)."""
+    _results(results.overview, repository_id)
+    if not _service().cancel(repository_id):
+        raise ApiError("Nothing to cancel", "This repository has no analysis running.",
+                       "Reload the page to see the repository's current status.", 409)
+    return jsonify({"repository_id": repository_id, "cancelling": True}), 202
 
 
 @api.get("/repositories/<int:repository_id>/commits")

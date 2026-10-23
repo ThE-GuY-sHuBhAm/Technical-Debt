@@ -3,7 +3,8 @@
 create_app() builds the application around one AnalysisService (aggregator), which owns
 tdea.db and the background analyses. The routes (routes.py) answer in JSON, CSV or PDF;
 the dashboard (dashboard/, a React and Chart.js single-page application) is served from
-its build folder, dashboard/dist, and reaches the API over HTTP only (NFR-14).
+its build, tdea/api/dashboard, which ships with the package (CON-06), and reaches the
+API over HTTP only (NFR-14).
 
 Errors: every failure the API reports has the FR-05 shape
 ``{"error": {"type", "cause", "action"}}`` with an HTTP status (NFR-07, NFR-11); an
@@ -29,7 +30,7 @@ from tdea.api.api_error import ApiError
 from tdea.api.routes import api
 
 LOGGER = logging.getLogger(__name__)
-DASHBOARD_DIST = Path(__file__).resolve().parents[2] / "dashboard" / "dist"
+DASHBOARD_DIST = Path(__file__).resolve().parent / "dashboard"
 
 
 def create_app(service: AnalysisService | None = None, *,
@@ -76,7 +77,7 @@ def create_app(service: AnalysisService | None = None, *,
             raise ApiError("Not found", "There is no such API endpoint.",
                            "Check the address against the API documentation.", 404)
         if not (folder / "index.html").is_file():
-            raise ApiError("Dashboard not built", "dashboard/dist/index.html does not exist.",
+            raise ApiError("Dashboard not built", "The dashboard build (index.html) is missing.",
                            "Run 'npm install' and 'npm run build' in the dashboard folder, "
                            "then reload this page.", 503)
         if (folder / path).is_file():

@@ -143,6 +143,8 @@ def comparison(store: ProductStore, first: int, second: int) -> dict[str, object
         aggregates = [_aggregate(point) for point in points]
         sides.append({"overview": overview(store, repository_id),
                       "timeline": [{"sequence": point["sequence"], "sha": point["sha"],
+                                    "author": point["author"],
+                                    "timestamp": point["timestamp"],
                                     "debt_score": point["debt_score"],
                                     "debt_delta": point["debt_delta"],
                                     "classification": point["classification"]}

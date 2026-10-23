@@ -214,3 +214,21 @@ def test_two_repositories_in_sequence_for_comparison(fx_s, tmp_path: Path) -> No
     with pytest.raises(SubmissionRefused):
         service.submit_pair(FX_S_URL, FX_S_URL.upper().replace("HTTPS://GITHUB.COM",
                                                                 "https://github.com"))
+
+
+def test_a_cancelled_analysis_stops_and_stores_nothing(fx_s, tmp_path: Path) -> None:
+    """SRS 4.1 Cancel: the run stops, the clone is deleted, a three-part error is kept."""
+    service = local_service(tmp_path, {"tdea-fixtures/fx-s": fx_s.path})
+    submission = service.submit(FX_S_URL)
+    assert service.cancel(submission.repository_id)
+    assert service.wait(submission.repository_id, 300)
+    repo = service.store.repository(submission.repository_id)
+    assert repo.status == ERROR and repo.error_type == "Analysis cancelled"
+    assert repo.error_cause and repo.error_action
+    assert rows(service.store.path, "SELECT count(*) FROM commits") == [(0,)]
+    assert not list(tmp_path.glob("tdea-clone-*"))  # FR-10
+    (entry,) = [json.loads(line) for line in
+                (tmp_path / AUDIT_FILE).read_text(encoding="utf-8").splitlines()]
+    assert entry["outcome"] == "Cancelled"
+    assert not service.cancel(submission.repository_id)  # nothing runs any more
+    assert analysed(service, FX_S_URL).cached is False  # the lock was released

@@ -81,6 +81,8 @@ def test_non_json_bodies_and_unknown_routes(client: FlaskClient) -> None:
     assert_error(client.get("/api/nothing"), 404)
     assert_error(client.delete("/api/analyses"), 405)
     assert_error(client.get("/api/repositories/1/commits/zzzzzzz"), 404)
+    assert_error(client.post("/api/repositories/1/cancel"), 409)  # nothing runs
+    assert_error(client.post("/api/repositories/999/cancel"), 404)
 
 
 def test_an_inaccessible_repository_gets_422(tmp_path: Path) -> None:
@@ -154,6 +156,8 @@ def test_comparison_overlay_summary_and_csv(client: FlaskClient) -> None:
     assert len(first["timeline"]) == 12 and len(second["timeline"]) == 1
     for key in ("mean_score", "peak_score", "spikes", "drops", "trend"):
         assert key in first["summary"]
+    for key in ("sha", "author", "timestamp", "debt_score", "classification"):
+        assert key in first["timeline"][0]  # NFR-10 tooltip fields
     table = list(csv.reader(io.StringIO(
         client.get("/api/comparison.csv?repo_1=1&repo_2=2").data.decode(), newline="")))
     assert table[0] == ["commit_sequence", "repo_1_debt_score", "repo_1_delta",
