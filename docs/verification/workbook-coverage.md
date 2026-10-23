@@ -27,11 +27,11 @@ and STATUS columns of the workbook are unchanged. In particular:
 
 | Status | Cases |
 | --- | --- |
-| Passed | 123 |
+| Passed | 124 |
 | Passed (gate) | 5 |
 | Automated, opt-in | 1 |
 | Partly met | 7 |
-| Not executed | 9 |
+| Not executed | 8 |
 | **Total** | **145** |
 
 ## Cases
@@ -179,7 +179,7 @@ and STATUS columns of the workbook are unchanged. In particular:
 | TC-139 | SCALABILITY - METRIC EXTENSIBILITY | NFR-17 | Not executed |  | Needs a prototype metric change and a review of its diff |
 | TC-140 | SCALABILITY - LANGUAGE ADAPTER | NFR-18 | Not executed |  | Needs the Architecture & Design Document, not yet produced (CL-11) |
 | TC-141 | SECURITY - PAT NOT STORED | NFR-19 | Passed | backend |  |
-| TC-142 | SECURITY - DATA CONFINEMENT | NFR-20 | Not executed |  | Needs a network capture of a real analysis |
+| TC-142 | SECURITY - DATA CONFINEMENT | NFR-20 | Passed | backend | In CI ("live GitHub API (FR-03)" job, run 39978030224): a real analysis of pallets/itsdangerous (N = 20) under `strace -f -e trace=connect` connected only to 140.82.113.3:443 and 140.82.114.6:443, both in GitHub's published ranges, and to the local resolver 127.0.0.53:53. The workbook asks for a packet capture of an FX-S analysis; FX-S is a local fixture, so a public repository stands in, and strace records only the analysis's own processes (TDEA, git, Pylint) |
 | TC-143 | PORTABILITY - CROSS-PLATFORM | NFR-21 | Partly met |  | CI runs the suite on ubuntu-22.04, macos-15 and windows-2025; the case names macOS 13 and Windows 11, so those runs are still manual |
 | TC-144 | PORTABILITY - PYTHON VERSION | NFR-22 | Passed (gate) |  | CI gate: Python 3.10 / 3.11 / 3.12 matrix |
 | TC-145 | REPRODUCIBILITY - CROSS-PLATFORM | NFR-23 | Passed | backend | In CI: the TC-128 test of each of the nine cells (Ubuntu 22.04, macOS 15, Windows Server 2025; Python 3.10 to 3.12) gave 69bb095660ee1e7d6e134d1211e32a9c (run 39969120720). The job "same FX-M CSV MD5 on every OS (TC-145)" compares them on every push |
