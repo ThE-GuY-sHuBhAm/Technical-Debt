@@ -60,6 +60,7 @@ unchanged.
 | TC-129, TC-133 | Nine invalid inputs: 400 or 422 with type, cause and next step; token not echoed | Passed. The FR-03 answers (not found, private, empty, bad token) come from the stub |
 | TC-129, tenth input | A repository without .py files | **Partly passed**: it is accepted (202) and ends as an Error with a three-part message after the clone. The case expects 400 or 422 at submission (see `open-decisions.md`) |
 | TC-130 | Process killed at 20 % or more: integrity_check ok, no partial commit rows, run marked interrupted on restart | Passed (POSIX locally; CI covers Windows and macOS) |
+| TC-145 | FX-M's CSV has the same MD5 on every operating system | Passed in CI: the TC-128 test of each of the nine cells (Ubuntu 22.04, macOS 15, Windows Server 2025; Python 3.10 to 3.12) gave 69bb095660ee1e7d6e134d1211e32a9c (run 39969120720). The job "same FX-M CSV MD5 on every OS (TC-145)" compares them on every push |
 | TC-141 | No PAT in tdea.db, the audit log, the clone folder, the exports, the API answers or the log records | Passed |
 
 ## Not covered here
@@ -68,4 +69,4 @@ unchanged.
 | --- | --- |
 | TC-134, TC-135, TC-137, TC-144 | CI gates (Pylint, pydocstyle, coverage, pinned versions) |
 | TC-136 | `tests/architecture/test_layer_imports.py` |
-| TC-019, TC-123, TC-131, TC-132, TC-139, TC-140, TC-142, TC-143, TC-145 | Manual or reference-machine cases; not executed |
+| TC-019, TC-123, TC-131, TC-132, TC-139, TC-140, TC-142, TC-143 | Manual or reference-machine cases; not executed |

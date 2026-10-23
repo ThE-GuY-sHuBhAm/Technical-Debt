@@ -621,7 +621,8 @@ def test_tc128_three_fx_m_runs_give_the_same_csv_md5(ws: Workspace, tmp_path: Pa
             f"/api/repositories/{submission.repository_id}/export.csv").data).hexdigest())
     assert len(set(digests)) == 1, digests
     if os.environ.get("TDEA_TC145_OUT"):
-        Path(os.environ["TDEA_TC145_OUT"]).write_text(digests[0] + "\n", encoding="utf-8")
+        Path(os.environ["TDEA_TC145_OUT"]).write_text(digests[0] + "\n", encoding="utf-8",
+                                                      newline="\n")
 
 
 SUBMISSION_FAILURES = [

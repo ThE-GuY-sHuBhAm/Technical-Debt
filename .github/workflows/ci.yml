@@ -101,8 +101,10 @@ jobs:
           pattern: tc145-*
       - name: Compare the MD5 of every cell
         run: |
-          for folder in tc145-*; do printf '%s  %s\n' "$(cat "$folder/tc145.md5")" "$folder"; done
-          test "$(cat tc145-*/tc145.md5 | sort -u | wc -l)" -eq 1
+          for folder in tc145-*; do
+            printf '%s  %s\n' "$(tr -d '\r\n' < "$folder/tc145.md5")" "$folder"
+          done
+          test "$(cat tc145-*/tc145.md5 | tr -d '\r' | sort -u | wc -l)" -eq 1
           test "$(ls -d tc145-* | wc -l)" -eq 9
 
   quality:

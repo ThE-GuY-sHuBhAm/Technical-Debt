@@ -27,11 +27,11 @@ and STATUS columns of the workbook are unchanged. In particular:
 
 | Status | Cases |
 | --- | --- |
-| Passed | 121 |
+| Passed | 122 |
 | Passed (gate) | 5 |
 | Automated, opt-in | 1 |
 | Partly met | 7 |
-| Not executed | 11 |
+| Not executed | 10 |
 | **Total** | **145** |
 
 ## Cases
@@ -182,4 +182,4 @@ and STATUS columns of the workbook are unchanged. In particular:
 | TC-142 | SECURITY - DATA CONFINEMENT | NFR-20 | Not executed |  | Needs a network capture of a real analysis |
 | TC-143 | PORTABILITY - CROSS-PLATFORM | NFR-21 | Partly met |  | CI runs the suite on ubuntu-22.04, macos-15 and windows-2025; the case names macOS 13 and Windows 11, so those runs are still manual |
 | TC-144 | PORTABILITY - PYTHON VERSION | NFR-22 | Passed (gate) |  | CI gate: Python 3.10 / 3.11 / 3.12 matrix |
-| TC-145 | REPRODUCIBILITY - CROSS-PLATFORM | NFR-23 | Not executed |  | Needs FX-M analysed on three operating systems and the CSV MD5s compared |
+| TC-145 | REPRODUCIBILITY - CROSS-PLATFORM | NFR-23 | Passed | backend | In CI: the TC-128 test of each of the nine cells (Ubuntu 22.04, macOS 15, Windows Server 2025; Python 3.10 to 3.12) gave 69bb095660ee1e7d6e134d1211e32a9c (run 39969120720). The job "same FX-M CSV MD5 on every OS (TC-145)" compares them on every push |
