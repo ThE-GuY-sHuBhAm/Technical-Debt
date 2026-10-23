@@ -177,6 +177,19 @@ def classify(delta: float) -> str:
     return STABLE
 
 
+def debt_score(cc_norm: float, smells_norm: float, mi_norm: float,
+               sloc_growth_norm: float) -> float:
+    """Return the FR-25 Debt Score of one commit's normalised values, rounded."""
+    return _r(100 * (WEIGHTS["cc"] * cc_norm + WEIGHTS["smells"] * smells_norm
+                     + WEIGHTS["mi"] * (1 - mi_norm)
+                     + WEIGHTS["sloc_growth"] * sloc_growth_norm))
+
+
+def debt_deltas(scores: Sequence[float]) -> list[float]:
+    """Return the FR-26 delta of each score from the previous one; 0.0 for the first."""
+    return [0.0] + [_r(later - earlier) for earlier, later in zip(scores, scores[1:])]
+
+
 def score(commits: Sequence[CommitAggregate]) -> list[CommitAggregate]:
     """Return the commits (oldest first) with normalised values, DS, delta and class."""
     growth = sloc_growth(commits)
@@ -188,18 +201,13 @@ def score(commits: Sequence[CommitAggregate]) -> list[CommitAggregate]:
         "density_norm": normalise([item.mean_smell_density for item in commits]),
         "sloc_growth_norm": normalise(growth),
     }
-    scored: list[CommitAggregate] = []
-    for index, item in enumerate(commits):
-        values = {name: _r(column[index]) for name, column in columns.items()}
-        debt = 100 * (WEIGHTS["cc"] * values["cc_norm"]
-                      + WEIGHTS["smells"] * values["density_norm"]
-                      + WEIGHTS["mi"] * (1 - values["mi_norm"])
-                      + WEIGHTS["sloc_growth"] * values["sloc_growth_norm"])
-        debt = _r(debt)
-        delta = _r(debt - scored[-1].debt_score) if scored else 0.0
-        scored.append(replace(item, sloc_growth=growth[index], debt_score=debt,
-                              debt_delta=delta, classification=classify(delta), **values))
-    return scored
+    values = [{name: _r(column[index]) for name, column in columns.items()}
+              for index in range(len(commits))]
+    scores = [debt_score(row["cc_norm"], row["density_norm"], row["mi_norm"],
+                         row["sloc_growth_norm"]) for row in values]
+    return [replace(item, sloc_growth=growth[index], debt_score=scores[index],
+                    debt_delta=delta, classification=classify(delta), **values[index])
+            for index, (item, delta) in enumerate(zip(commits, debt_deltas(scores)))]
 
 
 def patterns(classes: Sequence[tuple[int, str]]) -> list[Pattern]:
@@ -241,10 +249,13 @@ def high_risk_files(samples: Iterable[FileSample], limit: int = TOP_FILES) -> li
 
 
 def _dominant(cc_norm: float, density_norm: float) -> str:
-    """Return the metric that contributes more to a file's risk ("none" when both are 0)."""
+    """Return the metric that contributes more to a file's risk ("None" when both are 0).
+
+    The labels are the workbook's (TC-082): 'Complexity' or 'Smell density'.
+    """
     if cc_norm == density_norm == 0:
-        return "none"
-    return "cyclomatic complexity" if cc_norm >= density_norm else "smell density"
+        return "None"
+    return "Complexity" if cc_norm >= density_norm else "Smell density"
 
 
 def _terciles(values: Sequence[float]) -> list[str]:

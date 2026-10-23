@@ -87,7 +87,7 @@ def test_high_risk_ranking_dominant_metric_and_terciles() -> None:
     assert [(row.path, row.risk_score) for row in rows] == [
         ("a.py", 0.5), ("b.py", 0.5), ("d.py", 0.5), ("c.py", 0.0)]
     assert [row.dominant_metric for row in rows] == [
-        "cyclomatic complexity", "smell density", "cyclomatic complexity", "none"]
+        "Complexity", "Smell density", "Complexity", "None"]
     assert [row.risk_class for row in rows] == ["High", "High", "High", "Low"]
     spread = high_risk_files([sample("x.py", 1.0, 0.0), sample("y.py", 2.0, 0.0),
                               sample("z.py", 3.0, 0.0)])
