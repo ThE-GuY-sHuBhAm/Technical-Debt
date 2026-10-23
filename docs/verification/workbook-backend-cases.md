@@ -19,10 +19,19 @@ unchanged.
 - Times were measured on the development container and the CI runners, not on the
   reference machine of NFR-01 to NFR-03.
 
-## Results (23 Oct 2026, local run: 39 passed, 1 expected failure)
+## Results (23 Oct 2026, local run: 46 passed, 1 expected failure)
 
 | Case | What is checked | Result |
 | --- | --- | --- |
+| TC-015 | After an analysis with a PAT, the token is in no file under the workspace (tdea.db, audit log, clone folder) and in no log record | Passed (checked with TC-141) |
+| TC-017 | The clone holds FX-S's 12 commits | Passed. TDEA has no debug mode, so the test reads the clone where analysis begins, through a wrapped analyzer |
+| TC-018 | The clone's remote branches equal `git ls-remote --heads` (3 branches) | Passed, as TC-017 |
+| TC-020 | 12 stored hashes equal `git log --format=%H` | Passed |
+| TC-021 | The 120-character message is stored as its first 72 characters | Passed |
+| TC-022 | Stored author name and email equal `git log` for every commit | Passed |
+| TC-023 | 2026-09-10 18:30 +05:30 is stored as 2026-09-10T13:00:00Z | Passed |
+| TC-024 | Commit #10 lists a.py added, b.py modified, c.py deleted | Passed (FX-S, commit #10) |
+| TC-032 | After the analyses no clone is left in the temporary folder | Passed |
 | TC-030 | At FX-S commits #2, #6 and #12, each file's LOC equals the file at that commit (`git show`) | Passed |
 | TC-031 | A file deleted at a commit has rows only while it exists | Passed. FX-S deletes `fxs/c.py` at commit #10, not #7 |
 | TC-055 | Four tables with FR-19's primary and foreign keys | Passed |
@@ -51,7 +60,7 @@ unchanged.
 | TC-129, TC-133 | Nine invalid inputs: 400 or 422 with type, cause and next step; token not echoed | Passed. The FR-03 answers (not found, private, empty, bad token) come from the stub |
 | TC-129, tenth input | A repository without .py files | **Partly passed**: it is accepted (202) and ends as an Error with a three-part message after the clone. The case expects 400 or 422 at submission (see `open-decisions.md`) |
 | TC-130 | Process killed at 20 % or more: integrity_check ok, no partial commit rows, run marked interrupted on restart | Passed (POSIX locally; CI covers Windows and macOS) |
-| TC-141 | No PAT in tdea.db, the audit log, the clone folder, the exports or the API answers | Passed |
+| TC-141 | No PAT in tdea.db, the audit log, the clone folder, the exports, the API answers or the log records | Passed |
 
 ## Not covered here
 

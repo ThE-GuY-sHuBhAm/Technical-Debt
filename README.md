@@ -121,7 +121,8 @@ CR-01, which would take Selenium automation out of scope, is pending approval; u
 decision those cases remain in scope. The workbook's database, API and export cases are
 automated in `tests/product/test_workbook_backend_cases.py`
 (`docs/verification/workbook-backend-cases.md`); open points they found are listed in
-`docs/verification/open-decisions.md`.
+`docs/verification/open-decisions.md`. `docs/verification/workbook-coverage.md` lists all
+145 workbook cases with their status.
 
 The FR-03 GitHub check is tested against mocked answers everywhere except the CI job
 "live GitHub API (FR-03)", which runs `tests/product/test_github_live.py` against the

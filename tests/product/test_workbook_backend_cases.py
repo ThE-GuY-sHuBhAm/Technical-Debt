@@ -1,9 +1,10 @@
 """Workbook v1.2 cases checked through the REST API and tdea.db, without a browser.
 
-Covered: TC-030, TC-031 (checkout), TC-055 to TC-066 (persistence, queries, cache,
-audit), TC-103 to TC-105 and TC-107 to TC-110 (exports), TC-114 and TC-120
-(comparison), TC-125 (API response time), TC-127 to TC-130 and TC-133 (reliability and
-error quality) and TC-141 (token not stored). Every analysis goes through the real
+Covered: TC-017, TC-018, TC-020 to TC-024 and TC-032 (clone, history and clean-up),
+TC-030, TC-031 (checkout), TC-055 to TC-066 (persistence, queries, cache, audit),
+TC-103 to TC-105 and TC-107 to TC-110 (exports), TC-114 and TC-120 (comparison),
+TC-125 (API response time), TC-127 to TC-130 and TC-133 (reliability and error
+quality), TC-015 and TC-141 (token not stored). Every analysis goes through the real
 AnalysisService and Flask application. Only the FR-03 check is stubbed (product_support).
 
 Where the generated fixtures differ from the workbook's text, the test says so:
@@ -45,7 +46,10 @@ from pypdf import PdfReader
 
 from tdea.aggregator.analysis_service import AUDIT_FILE, AnalysisService
 from tdea.aggregator.product_models import COMPLETE, ERROR
+from tdea.aggregator.product_store import ProductStore
 from tdea.aggregator.scoring import WEIGHTS
+from tdea.analyzer.product_analyzer import ProductAnalyzer
+from tdea.analyzer.product_engine import ProductEngine
 from tdea.api.app import create_app
 from tdea.git_handler.errors import ErrorCode, TdeaError
 
@@ -53,7 +57,7 @@ FX_M_URL = "https://github.com/tdea-fixtures/fx-m"
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
 
-class Workspace:  # pylint: disable=too-few-public-methods
+class Workspace:  # pylint: disable=too-few-public-methods,too-many-instance-attributes
     """FX-S, FX-M and FX-ERR analysed once through the API, with clones counted."""
 
     def __init__(self, root: Path) -> None:
@@ -104,6 +108,87 @@ def error_parts(response, status: int) -> dict:
     for raw in ("Traceback", "Exception", 'File "'):
         assert raw not in json.dumps(error)
     return error
+
+
+# CLONE AND COMMIT HISTORY ------------------------------------------------------------
+
+class CloneInspector(ProductAnalyzer):  # pylint: disable=too-few-public-methods
+    """The product analyzer, which first records the fresh clone (TC-017, TC-018)."""
+
+    def __init__(self) -> None:
+        """Record nothing yet."""
+        super().__init__()
+        self.commits: list[str] = []
+        self.remote_branches: list[str] = []
+
+    def analyse(self, repository, commits, *rest):
+        """Record the clone's history and remote branches, then analyse as usual.
+
+        This is the pause after the clone step that the cases ask for: TDEA has no debug
+        mode, so the test looks at the clone at the point where analysis would begin.
+        """
+        self.commits = git_output(repository.path, "log", "--oneline").splitlines()
+        self.remote_branches = git_output(repository.path, "branch", "-r",
+                                          "--format=%(refname:short)").split()
+        return super().analyse(repository, commits, *rest)
+
+
+def test_tc017_tc018_clone_has_every_commit_and_branch(tmp_path: Path) -> None:
+    """TC-017: the clone has FX-S's 12 commits. TC-018: and all 3 of its branches."""
+    fx_s = make_fx_product.build_fx_s(tmp_path / "fx-s")
+    inspector = CloneInspector()
+    engine = ProductEngine(client=StubClient(), analyzer=inspector,
+                           clone_source=lambda repo: fx_s.path, temp_root=tmp_path / "ws")
+    service = AnalysisService(ProductStore(tmp_path / "ws" / "tdea.db"), engine,
+                              lock_directory=tmp_path / "ws" / "lock")
+    analysed(service, FX_S_URL)
+    assert len(inspector.commits) == 12
+    heads = sorted(line.split("refs/heads/")[1] for line in
+                   git_output(fx_s.path, "ls-remote", "--heads", str(fx_s.path)).splitlines())
+    assert heads == ["develop", "feature/charts", "main"]
+    assert sorted(item.removeprefix("origin/") for item in inspector.remote_branches
+                  if item not in ("origin", "origin/HEAD")) == heads
+
+
+def test_tc020_tc022_stored_hashes_and_authors_equal_git_log(ws: Workspace) -> None:
+    """TC-020: 12 rows whose hashes equal git log. TC-022: author name and email too."""
+    stored = ws.rows("SELECT sha, author_name, author_email FROM commits "
+                     "WHERE repository_id = ? ORDER BY sequence", ws.ids["fx-s"])
+    logged = [tuple(line.split("|")) for line in reversed(git_output(
+        ws.fx_s.path, "log", "--format=%H|%an|%ae").splitlines())]
+    assert len(stored) == 12 and stored == logged
+
+
+def test_tc021_message_of_120_characters_is_stored_as_72(ws: Workspace) -> None:
+    """TC-021: the 120-character message is stored as its first 72 characters."""
+    long = make_fx_product.LONG_MESSAGE
+    (message,), = ws.rows("SELECT message FROM commits WHERE repository_id = ? AND "
+                          "message LIKE ?", ws.ids["fx-s"], long[:20] + "%")
+    assert len(long) == 120 and len(message) == 72 and message == long[:72]
+
+
+def test_tc023_commit_time_is_stored_in_utc(ws: Workspace) -> None:
+    """TC-023: the 2026-09-10 18:30 +05:30 commit is stored as 2026-09-10T13:00:00Z."""
+    stored = [value for value, in ws.rows(
+        "SELECT authored_at FROM commits WHERE repository_id = ?", ws.ids["fx-s"])]
+    assert "2026-09-10T13:00:00Z" in stored
+
+
+def test_tc024_changed_files_of_the_add_modify_delete_commit(ws: Workspace) -> None:
+    """TC-024: commit #10 lists a.py added, b.py modified and c.py deleted."""
+    (changed,), = ws.rows("SELECT changed_files FROM commits WHERE repository_id = ? "
+                          "AND sequence = 10", ws.ids["fx-s"])
+    assert sorted(map(tuple, json.loads(changed))) == [
+        ("fxs/a.py", "added"), ("fxs/b.py", "modified"), ("fxs/c.py", "deleted")]
+
+
+def test_tc032_temporary_clone_is_gone_after_the_analysis(ws: Workspace) -> None:
+    """TC-032: after the analyses complete, the temporary folder holds no clone."""
+    assert ws.sources.clones  # analyses did clone into the workspace
+    left = [path.name for path in (ws.root / "ws").iterdir()
+            if path.name not in ("tdea.db", AUDIT_FILE, "lock")
+            and not path.name.startswith("tdea.db-")]
+    assert left == []
 
 
 # COMMIT CHECKOUT ---------------------------------------------------------------------
@@ -626,20 +711,22 @@ def test_tc130_killed_during_analysis_leaves_a_consistent_database(
 
 # SECURITY ----------------------------------------------------------------------------
 
-def test_tc141_token_is_not_stored_anywhere(tmp_path: Path, canary_token: str,
-                                           find_canary) -> None:
-    """TC-141: after an analysis with a PAT, no stored artefact contains the token.
+def test_tc015_tc141_token_is_not_stored_anywhere(tmp_path: Path, canary_token: str,
+                                                  find_canary, caplog) -> None:
+    """TC-015, TC-141: after an analysis with a PAT, no stored artefact contains the token.
 
-    Searched: tdea.db, the audit log, the temporary clone folder, both exports and the
-    API answers.
+    Searched: tdea.db, the audit log, the temporary clone folder, both exports, the API
+    answers and every log record the analysis wrote.
     """
     fx_s = make_fx_product.build_fx_s(tmp_path / "fx-s")
     client_stub = StubClient()
     service = local_service(tmp_path / "ws", {"tdea-fixtures/fx-s": fx_s.path}, client_stub)
     client = create_app(service).test_client()
-    answer = client.post("/api/analyses", json={"url": FX_S_URL, "token": canary_token})
-    assert answer.status_code == 202 and client_stub.tokens == [canary_token]
-    assert service.wait(answer.json["repository_id"], 300)
+    with caplog.at_level("DEBUG"):
+        answer = client.post("/api/analyses", json={"url": FX_S_URL, "token": canary_token})
+        assert answer.status_code == 202 and client_stub.tokens == [canary_token]
+        assert service.wait(answer.json["repository_id"], 300)
+    assert caplog.records and canary_token not in caplog.text
     exports = tmp_path / "exports"
     exports.mkdir()
     repository_id = answer.json["repository_id"]
