@@ -83,10 +83,13 @@ def test_is_research_path(path: str, expected: bool) -> None:
         ("dashboard", False),
         ("tests/dashboard/test_ui.py", False),
         ("tdea/api/dashboard_routes.py", False),
+        ("tdea/api/dashboard/index.html", True),
+        ("tdea/api/dashboard/assets/index.js", True),
+        ("tdea/api/dashboard", False),
     ],
 )
 def test_is_dashboard_path(path: str, expected: bool) -> None:
-    """Only paths under the top-level dashboard directory count."""
+    """Only paths under the dashboard directory or its committed build count."""
     assert guard.is_dashboard_path(path) is expected
 
 

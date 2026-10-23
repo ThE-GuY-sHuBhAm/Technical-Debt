@@ -2,7 +2,9 @@
 
 TDEA adds no research screen, so the web interface and its browser cases stay as they
 are (execution plan, section 6). This script reads the git history and fails if a
-research commit adds, changes, deletes or renames a file under dashboard/.
+research commit adds, changes, deletes or renames a file under dashboard/, or under
+tdea/api/dashboard/, where the dashboard's committed production build lives (sprint
+23 Oct; it ships with the package for CON-06).
 
 A commit counts as a research commit when either of these holds:
 
@@ -39,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 DASHBOARD = "dashboard"
+DASHBOARD_BUILD = PurePosixPath("tdea", "api", "dashboard")
 _RESEARCH_SUBJECT = re.compile(r"^research(\([^)]*\))?!?:", re.IGNORECASE)
 _RESEARCH_NAMES = frozenset({"rg1", "rg10"})
 _RECORD = "\x1e"
@@ -72,9 +75,11 @@ def is_research_path(path: str) -> bool:
 
 
 def is_dashboard_path(path: str, dashboard: str = DASHBOARD) -> bool:
-    """Return True if ``path`` lies under the top-level dashboard directory."""
+    """Return True if ``path`` lies under the dashboard directory or its build folder."""
     parts = PurePosixPath(path).parts
-    return len(parts) > 1 and parts[0] == dashboard
+    build = DASHBOARD_BUILD.parts
+    return ((len(parts) > 1 and parts[0] == dashboard)
+            or (len(parts) > len(build) and parts[:len(build)] == build))
 
 
 def research_reason(commit: Commit) -> str | None:
