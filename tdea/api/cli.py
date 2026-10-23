@@ -11,6 +11,10 @@ Commands (SRS 4.5.1):
   goes to the accessibility check only and is never printed or stored (FR-04, NFR-19).
 * ``tdea research status RUN_FILE`` lists every run in the run file's research store and
   its units, without writing anything.
+* ``tdea research export --store DB --out DIR [--format csv|json|jsonl] RUN_ID...``
+  writes the record files of complete runs, metadata.json and data_dictionary.csv
+  (FR-62): exit 1 for an unknown run, store or unusable folder, 3 for runs of different
+  kinds or key fingerprints, or a run that has not completed.
 
 Exit codes are the ones every source agrees on (Task 7 Day 6 decision 3): 0 complete or
 nothing to do; 1 invalid input (a run file that fails validation, a malformed command
@@ -22,7 +26,7 @@ CL-15 (SRS v2.3 gives exit 4 to "a unit stopped on a clone, network or disk erro
 Specification Freeze defines 0 to 3 only), CL-19 (a failed accessibility check at run time)
 or no definition at all. Until the owner decides, the process ends with status 1 as a
 placeholder; the note says so, and status 1 then does not mean invalid input. No code
-outside 0 to 4 is used. The export command arrives with FR-62. Every error is printed as
+outside 0 to 4 is used. Every error is printed as
 error type, cause and action through ApiError (FR-05, NFR-11); the command line calls only
 ResearchService (Freeze section 2).
 """
@@ -40,6 +44,7 @@ from tdea.aggregator.research_job import PlannedUnit, RunObserver, UnitCounts
 from tdea.aggregator.research_service import ResearchRunError, ResearchService, StoreStatus
 from tdea.aggregator.run_file import RunFileInvalid
 from tdea.api.api_error import ApiError
+from tdea.api.research_exporter import FORMATS, ExportFolderInvalid, ResearchExporter
 
 EXIT_OK = 0
 EXIT_INVALID_INPUT = 1  # FR-48: invalid input, including a malformed command line.
@@ -70,8 +75,8 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         "research",
         help="headless research engine for RG1 and RG10",
         description=(
-            "Headless research engine for RG1 and RG10. Available commands: validate, run "
-            "and status. The export command is not part of this version."
+            "Headless research engine for RG1 and RG10. Available commands: validate, run, "
+            "status and export."
         ),
     )
     research_commands = research.add_subparsers(
@@ -94,6 +99,16 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         description="List every run in the run file's research store with its units, "
                     "without writing anything.")
     status.add_argument("run_file", metavar="RUN_FILE", help="path of the YAML run file")
+    export = research_commands.add_parser(
+        "export", help="export the records of complete runs (FR-62)",
+        description="Write every record of one or more complete runs of the same kind and "
+                    "key as CSV, JSON or JSONL, with metadata.json and data_dictionary.csv. "
+                    "Record files hold identity keys only.")
+    export.add_argument("run_ids", metavar="RUN_ID", nargs="+", help="run identifiers")
+    export.add_argument("--store", required=True, help="path of the research.db file")
+    export.add_argument("--out", required=True, help="new or empty output folder")
+    export.add_argument("--format", choices=FORMATS, default="csv", dest="fmt",
+                        help="record file format (default csv)")
     return parser, research
 
 
@@ -121,6 +136,11 @@ def main(argv: Sequence[str] | None = None,
             return _run(args.run_file, service, _token(args.ask_token))
         if args.research_command == "status":
             return _status(args.run_file, service)
+        if args.research_command == "export":
+            return _export(args, service)
+    except ExportFolderInvalid as error:
+        print("\n".join(ApiError.wrap(error).lines()), file=sys.stderr)
+        return error.exit_code
     except RunFileInvalid as invalid:
         _print_problems(invalid)
         return EXIT_INVALID_INPUT
@@ -182,6 +202,18 @@ def _run(run_file: str, service: ResearchService, token: str | None) -> int:
 def _status(run_file: str, service: ResearchService) -> int:
     """Print every run of the run file's store and its units."""
     print("\n".join(status_lines(service.status(run_file))))
+    return EXIT_OK
+
+
+def _export(args: argparse.Namespace, service: ResearchService) -> int:
+    """Export the named runs and print where the files went."""
+    data = service.export(args.store, list(args.run_ids))
+    written = ResearchExporter().write(data, args.out, args.fmt)
+    rows = sum(len(record.rows) for record in data.files)
+    print(f"Exported {len(data.runs)} {_plural(len(data.runs), 'run', 'runs')} "
+          f"({data.kind}, key {data.key_fingerprint}): {rows} records in "
+          f"{len(data.files)} {args.fmt} files, plus data_dictionary.csv and metadata.json, "
+          f"to {written[-1].parent}.")
     return EXIT_OK
 
 

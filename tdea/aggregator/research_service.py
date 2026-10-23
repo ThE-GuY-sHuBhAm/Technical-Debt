@@ -73,6 +73,7 @@ from tdea.aggregator.lock import AnalysisLock, LockUnavailable, default_lock_dir
 from tdea.aggregator.research_job import (COMPLETE, PLANNED, HistoryMismatch, ResearchJob,
                                           RunContext, RunObserver, RunResult, StoreIncomplete,
                                           UnitCounts, check_store)
+from tdea.aggregator.research_export import ExportData, ExportRefused, collect
 from tdea.aggregator.research_models import Repository, Run, Unit, iso_utc
 from tdea.aggregator.research_store import ResearchStore
 from tdea.aggregator.run_file import RunFile, read_run_file
@@ -227,6 +228,26 @@ class ResearchService:
                                    ANOTHER_KIND) from None
         with store:
             return StoreStatus(store_path, True, _runs(store))
+
+    def export(self, store_path: Path | str, run_ids: list[str]) -> ExportData:
+        """Return the records of ``run_ids`` in the research store at ``store_path`` (FR-62).
+
+        The store is opened read-only, so an export never changes it. A missing store or
+        a file of another kind is invalid input (exit 1); collect() refuses unknown,
+        unfinished or mixed runs.
+        """
+        path = Path(store_path).expanduser().resolve()
+        try:
+            store = ResearchStore.read_only(path)
+        except (FileNotFoundError, ValueError) as exc:
+            raise ResearchRunError("Research store unusable", str(exc),
+                                   "Name the research.db file the runs were written to.",
+                                   1) from None
+        with store:
+            try:
+                return collect(store, run_ids)
+            except ExportRefused as exc:
+                raise ResearchRunError.wrap(exc) from None
 
     def _refuse_incomplete_store(self, path: Path, run_file: RunFile) -> None:
         """Step 4: raise StoreIncomplete for a stored run lacking records, writing nothing.
