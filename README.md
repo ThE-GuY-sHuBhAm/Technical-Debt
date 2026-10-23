@@ -122,7 +122,8 @@ decision those cases remain in scope. The workbook's database, API and export ca
 automated in `tests/product/test_workbook_backend_cases.py`
 (`docs/verification/workbook-backend-cases.md`); open points they found are listed in
 `docs/verification/open-decisions.md`. `docs/verification/workbook-coverage.md` lists all
-145 workbook cases with their status.
+145 workbook cases with their status. `tools/validate_metrics.py` checks stored metrics
+against the radon and Pylint command lines (`docs/verification/metric-validation.md`).
 
 The FR-03 GitHub check is tested against mocked answers everywhere except the CI job
 "live GitHub API (FR-03)", which runs `tests/product/test_github_live.py` against the
