@@ -55,6 +55,7 @@ from tdea.analyzer.research.rg1.unit_run import (Classifier, HistoryChanged, His
                                                  RepositorySession, SelectionInvalid,
                                                  SessionParts, UnitOutcome, UnitWindow,
                                                  commit_record)
+from tdea.analyzer.research.rg10.counts import SmellCounter
 from tdea.analyzer.research.rg10.prepare import PREPARE_MODULE_VERSION
 from tdea.git_handler.errors import ErrorCode, TdeaError
 from tdea.git_handler.github_client import GitHubClient
@@ -229,6 +230,11 @@ class ResearchEngine:
         incomplete = self._rules.incomplete()
         if incomplete:
             raise RulesIncomplete(incomplete)
+
+    def smell_counter(self, smell_mapping: tuple[tuple[str, tuple[str, ...]], ...]
+                      ) -> SmellCounter:
+        """Return FR-61's counter over this engine's research profile."""
+        return SmellCounter(self._profile, smell_mapping)
 
     def profile_hash(self) -> str:
         """Return the research profile hash (FR-51)."""

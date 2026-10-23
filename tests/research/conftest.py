@@ -5,7 +5,8 @@ reproducible; real runs use the KeyStore's random key. FX-RG1 v2 (Day 6) is v1 p
 RE-10 and RE-08 cases; v1's fixtures are unchanged. FX-RG1 v3 (Day 7) is v2 plus the
 RE-11 disappearance-mode cases; v1's and v2's commits are unchanged. FX-RG1 v4 (Day 8)
 is v3 plus the RE-13 covariate cases; v1's to v3's commits are unchanged. FX-RG10 v1
-(Day 9) is the synthetic RG10 bundle; tests read it and never change it.
+(Day 9) is the synthetic RG10 bundle; tests read it and never change it. FX-RG10 v2
+(sprint 23 Oct) is v1 plus the RE-17 and RE-18 inputs, evaluated once per session.
 """
 
 from __future__ import annotations
@@ -17,7 +18,9 @@ import make_fx_rg1_v2
 import make_fx_rg1_v3
 import make_fx_rg1_v4
 import make_fx_rg10
+import make_fx_rg10_v2
 import pytest
+import rg10_run
 import run_setup
 from fx_rg1_clone import ClonedFxRg1, ClonedFxRg1V2, clone_fx_rg1, clone_fx_rg1_v2
 
@@ -70,6 +73,19 @@ def _fx_rg1_v4(tmp_path_factory: pytest.TempPathFactory) -> make_fx_rg1_v4.FxRg1
 def _fx_rg10(tmp_path_factory: pytest.TempPathFactory) -> make_fx_rg10.FxRg10:
     """Build FX-RG10 v1 once for the test session."""
     return make_fx_rg10.build(tmp_path_factory.mktemp("fx-rg10") / "bundle")
+
+
+@pytest.fixture(name="fx_rg10_v2", scope="session")
+def _fx_rg10_v2(tmp_path_factory: pytest.TempPathFactory) -> make_fx_rg10.FxRg10:
+    """Build FX-RG10 v2 once for the test session."""
+    return make_fx_rg10_v2.build(tmp_path_factory.mktemp("fx-rg10-v2") / "bundle")
+
+
+@pytest.fixture(name="rg10_evaluated", scope="session")
+def _rg10_evaluated(fx_rg10_v2: make_fx_rg10.FxRg10,
+                    tmp_path_factory: pytest.TempPathFactory) -> rg10_run.Rg10Evaluation:
+    """Evaluate FX-RG10 v2 once through the command line, then start it again."""
+    return rg10_run.evaluate(fx_rg10_v2.path, tmp_path_factory.mktemp("rg10-run"))
 
 
 @pytest.fixture(name="built", scope="session")

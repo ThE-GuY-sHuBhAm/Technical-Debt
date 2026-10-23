@@ -17,7 +17,8 @@ Commands (SRS 4.5.1):
   kinds or key fingerprints, or a run that has not completed.
 
 Exit codes are the ones every source agrees on (Task 7 Day 6 decision 3): 0 complete or
-nothing to do; 1 invalid input (a run file that fails validation, a malformed command
+nothing to do; 2 an RG10 evaluation complete with exclusions (FR-59; sprint 23 Oct);
+1 invalid input (a run file that fails validation, a malformed command
 line, SHAs outside their window or absent from the history); 3 refused (the NFR-24
 environment, CL-03 incomplete (decision 1), the single-analysis lock held or unusable,
 a changed history). Every other failure has no agreed exit code. It is printed in the
@@ -42,12 +43,14 @@ from datetime import datetime, time
 
 from tdea.aggregator.research_job import PlannedUnit, RunObserver, UnitCounts
 from tdea.aggregator.research_service import ResearchRunError, ResearchService, StoreStatus
-from tdea.aggregator.run_file import RunFileInvalid
+from tdea.aggregator.rg10_job import Rg10Result
+from tdea.aggregator.run_file import Rg10RunFile, RunFileInvalid
 from tdea.api.api_error import ApiError
 from tdea.api.research_exporter import FORMATS, ExportFolderInvalid, ResearchExporter
 
 EXIT_OK = 0
 EXIT_INVALID_INPUT = 1  # FR-48: invalid input, including a malformed command line.
+EXIT_EXCLUSIONS = 2  # FR-48: complete with exclusions (RG10 unevaluable outputs, FR-59).
 EXIT_REFUSED = 3  # FR-48: refused.
 EXIT_UNDECIDED = 1  # placeholder while the code is unresolved; not a claim of invalid input
 TOKEN_VARIABLE = "TDEA_GITHUB_TOKEN"
@@ -186,6 +189,13 @@ def _print_problems(invalid: RunFileInvalid) -> None:
 def _validate(run_file: str, service: ResearchService) -> int:
     """Check one run file; print a summary or raise RunFileInvalid."""
     checked = service.validate(run_file)
+    if isinstance(checked, Rg10RunFile):
+        types = ", ".join(f"{smell} = {' + '.join(rules)}" for smell, rules in
+                          checked.smell_mapping)
+        print(f"Run file is valid: an RG10 evaluation of the bundle {checked.bundle} with "
+              f"the smell mapping {types}. The bundle itself is checked when the run "
+              "starts.")
+        return EXIT_OK
     print(f"Run file is valid: an RG1 run over {len(checked.repositories)} "
           f"{_plural(len(checked.repositories), 'repository', 'repositories')} and "
           f"{checked.unit_count} {_plural(checked.unit_count, 'unit', 'units')} "
@@ -194,8 +204,14 @@ def _validate(run_file: str, service: ResearchService) -> int:
 
 
 def _run(run_file: str, service: ResearchService, token: str | None) -> int:
-    """Start or resume one run, printing progress; return 0 when it is complete."""
-    service.run(run_file, token=token, observer=_Progress())
+    """Start or resume one run, printing progress; return 0, or 2 with exclusions."""
+    result = service.run(run_file, token=token, observer=_Progress())
+    if isinstance(result, Rg10Result):
+        print(f"Bundle evaluated: {result.outputs} "
+              f"{_plural(result.outputs, 'output', 'outputs')}, {result.unevaluable} "
+              f"unevaluable (listed in the store and in exports).", flush=True)
+        if result.with_exclusions and not result.already_complete:
+            return EXIT_EXCLUSIONS
     return EXIT_OK
 
 

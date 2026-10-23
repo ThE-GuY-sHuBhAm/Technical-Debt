@@ -2,10 +2,11 @@
 
 Run identifier (Freeze FR-48 and glossary): the first 12 hex characters of SHA-256 over
 the canonical run file without store and key_file, the profile hash, the TDEA version
-and the key fingerprint (an RG10 run adds the bundle content hash; RG10 runs are not yet
-supported). The same inputs resume the same run. SRS v2.3 also leaves out lint_cache and
-bundle; both are refused or absent in an RG1 run file today, so the two texts give the
-same identifier.
+and the key fingerprint; an RG10 run adds the bundle content hash under the key
+"bundle_content_hash" (sprint 23 Oct), and its canonical run file is {"kind",
+"smell_mapping"}, the mapping as sorted type -> rule list. The same inputs resume the
+same run. SRS v2.3 also leaves out lint_cache and bundle; both are refused or absent in
+an RG1 run file today, so the two texts give the same identifier.
 
 How the parts are combined (Task 7 Day 6 decision 4): SHA-256 over the canonical JSON of
 the object {"canonical_run_file", "key_fingerprint", "profile_hash", "tdea_version"}.
@@ -50,7 +51,7 @@ import hashlib
 from datetime import datetime, timezone
 
 from tdea.aggregator.research_models import canonical_json
-from tdea.aggregator.run_file import RunFile
+from tdea.aggregator.run_file import Rg10RunFile, RunFile
 
 IDENTIFIER_LENGTH = 12
 
@@ -64,8 +65,11 @@ def instant_text(moment: datetime | None) -> str | None:
     return moment.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def canonical_run_file(run_file: RunFile) -> dict[str, object]:
-    """Return the run file without store and key_file, as canonical data."""
+def canonical_run_file(run_file: RunFile | Rg10RunFile) -> dict[str, object]:
+    """Return the run file without store and key_file (and bundle), as canonical data."""
+    if isinstance(run_file, Rg10RunFile):
+        return {"kind": run_file.kind,
+                "smell_mapping": {smell: list(rules) for smell, rules in run_file.smell_mapping}}
     return {
         "kind": run_file.kind,
         "seeds": dict(run_file.seeds),
@@ -91,22 +95,27 @@ def canonical_run_file(run_file: RunFile) -> dict[str, object]:
     }
 
 
-def canonical_text(run_file: RunFile) -> str:
+def canonical_text(run_file: RunFile | Rg10RunFile) -> str:
     """Return the canonical run file as the text research.db records (FR-52)."""
     return canonical_json(canonical_run_file(run_file))
 
 
-def run_identifier(run_file: RunFile, profile_hash: str, tdea_version: str,
-                   key_fingerprint: str) -> str:
+def run_identifier(run_file: RunFile | Rg10RunFile, profile_hash: str, tdea_version: str,
+                   key_fingerprint: str, bundle_content_hash: str | None = None) -> str:
     """Return the 12-hex run identifier of ``run_file`` under these parameters (FR-48)."""
     for name, value in (("profile_hash", profile_hash), ("tdea_version", tdea_version),
                         ("key_fingerprint", key_fingerprint)):
         if not isinstance(value, str) or not value:
             raise ValueError(f"the run identifier needs a non-empty {name}")
-    payload = canonical_json({
+    parts = {
         "canonical_run_file": canonical_run_file(run_file),
         "key_fingerprint": key_fingerprint,
         "profile_hash": profile_hash,
         "tdea_version": tdea_version,
-    })
+    }
+    if isinstance(run_file, Rg10RunFile):
+        if not bundle_content_hash:
+            raise ValueError("an RG10 run identifier needs the bundle content hash")
+        parts["bundle_content_hash"] = bundle_content_hash
+    payload = canonical_json(parts)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:IDENTIFIER_LENGTH]

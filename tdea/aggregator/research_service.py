@@ -76,12 +76,13 @@ from tdea.aggregator.research_job import (COMPLETE, PLANNED, HistoryMismatch, Re
 from tdea.aggregator.research_export import ExportData, ExportRefused, collect
 from tdea.aggregator.research_models import Repository, Run, Unit, iso_utc
 from tdea.aggregator.research_store import ResearchStore
-from tdea.aggregator.run_file import RunFile, read_run_file
+from tdea.aggregator.rg10_job import Rg10Context, Rg10Job, Rg10Result
+from tdea.aggregator.run_file import Rg10RunFile, RunFile, read_run_file
 from tdea.aggregator.run_identity import canonical_text, run_identifier
 from tdea.analyzer.research.engine import (CL15, HistoryChanged, ResearchEngine,
                                            RulesIncomplete, SelectionInvalid, UnitStopped)
 from tdea.analyzer.research.profile import EnvironmentFacts, EnvironmentRefused
-from tdea.analyzer.research.rg10.bundle import BundleInvalid
+from tdea.analyzer.research.rg10.bundle import BundleInvalid, BundleLoader, bundle_content_hash
 
 _AGREED = (EnvironmentRefused, RulesIncomplete, LockUnavailable, HistoryChanged,
            HistoryMismatch, SelectionInvalid, UnitStopped, StoreIncomplete, BundleInvalid)
@@ -186,15 +187,17 @@ class ResearchService:
         self._paths = paths if paths is not None else ServicePaths()
         self._environment = environment
 
-    def validate(self, path: Path | str) -> RunFile:
+    def validate(self, path: Path | str) -> RunFile | Rg10RunFile:
         """Return the validated run file at ``path``, or raise RunFileInvalid (FR-48)."""
         return read_run_file(path, self._engine, self._clock())
 
     def run(self, path: Path | str, token: str | None = None,
-            observer: RunObserver | None = None) -> RunResult:
+            observer: RunObserver | None = None) -> RunResult | Rg10Result:
         """Start, or resume, the run the run file at ``path`` defines (FR-48, NFR-25)."""
         observer = observer if observer is not None else RunObserver()
         run_file = self.validate(path)
+        if isinstance(run_file, Rg10RunFile):
+            return self._run_rg10(Path(path), run_file, observer)
         try:
             facts = self._engine.check_environment(self._environment)
             self._engine.check_rules()
@@ -228,6 +231,52 @@ class ResearchService:
                                    ANOTHER_KIND) from None
         with store:
             return StoreStatus(store_path, True, _runs(store))
+
+    def _run_rg10(self, path: Path, run_file: Rg10RunFile,
+                  observer: RunObserver) -> Rg10Result:
+        """Evaluate one RG10 bundle (Freeze section 9), in the order RG1 runs use.
+
+        Validate (done), check the environment (NFR-24, exit 3), load and validate the
+        bundle (FR-58, exit 1), take the lock (exit 3 when held), compute the run
+        identifier from the key fingerprint and the bundle content hash, report it, then
+        let Rg10Job evaluate and commit the bundle as one unit. Nothing is written before
+        the lock is held; the key file is the default one (CL-05 reading).
+        """
+        try:
+            facts = self._engine.check_environment(self._environment)
+            bundle_root = _beside(path, run_file.bundle)
+            loaded = BundleLoader(dict(run_file.smell_mapping)).load(bundle_root)
+            content_hash = bundle_content_hash(bundle_root)
+            with AnalysisLock(self._paths.lock_directory):
+                key_store = KeyStore(self._paths.key_file)
+                key_store.key()
+                fingerprint = key_store.fingerprint()
+                run_id = run_identifier(run_file, self._engine.profile_hash(), __version__,
+                                        fingerprint, content_hash)
+                observer.run_identified(run_id)
+                observer.run_starting(run_id, 1, 0)
+                metadata = self._engine.run_metadata(facts)
+                with _open(ResearchStore, _beside(path, run_file.store),
+                           "research store") as store:
+                    result = Rg10Job(store, self._engine.smell_counter(run_file.smell_mapping),
+                                     self._clock).run(Rg10Context(
+                                         run_id, canonical_text(run_file), __version__,
+                                         fingerprint, metadata, loaded, content_hash))
+                observer.run_completed(run_id, 1, result.already_complete)
+                return result
+        except _AGREED as exc:
+            raise ResearchRunError.wrap(exc) from None
+        except KeyFileError as exc:
+            raise ResearchRunError("Key file unusable", str(exc),
+                                   "Restore the key file from your backup; TDEA never "
+                                   "replaces an existing key file.", None,
+                                   "unusable key file") from None
+        except (OSError, OperationalError):
+            raise ResearchRunError(
+                "Run stopped", "A file or database operation failed, for example because "
+                "the disk is full or a folder cannot be written.",
+                "Fix the problem and run the same run file again; nothing of the bundle was "
+                "stored.", None, "disk or file failure", CL15) from None
 
     def export(self, store_path: Path | str, run_ids: list[str]) -> ExportData:
         """Return the records of ``run_ids`` in the research store at ``store_path`` (FR-62).

@@ -224,23 +224,33 @@ def write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
     write(path, "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows))
 
 
-def build(path: Path) -> FxRg10:
-    """Build FX-RG10 v1 at ``path``, which must not exist, and return it."""
+def build(path: Path, cases: tuple[Case, ...] = CASES, meta: dict[str, object] | None = None,
+          variant_files: dict[tuple[str, str], dict[str, str]] | None = None,
+          version: str = VERSION) -> FxRg10:
+    """Build FX-RG10 v1 at ``path``, which must not exist, and return it.
+
+    Later fixture versions (make_fx_rg10_v2) pass more ``cases``, their own bundle.json
+    ``meta`` and extra ``variant_files`` ((smell, condition) -> {relative path: text}),
+    written before any record is made; the defaults build v1 byte for byte.
+    """
     path = Path(path)
     path.mkdir(parents=True)
-    write(path / "bundle.json", json.dumps(BUNDLE, indent=2) + "\n")
+    gen_ids = {case.label: f"g{number:02d}" for number, case in enumerate(cases, 1)}
+    write(path / "bundle.json", json.dumps(BUNDLE if meta is None else meta, indent=2) + "\n")
     for (smell, condition), module in VARIANT_MODULES.items():
         variant = path / "variants" / smell / condition
         write(variant / "shop" / "__init__.py", b"")
         write(variant / TARGET_MODULE, module)
         write(variant / "tests" / "test_total.py", PROJECT_TEST)
+        for name, text in (variant_files or {}).get((smell, condition), {}).items():
+            write(variant / name, text)
     for task_id, files in HIDDEN_TEST_FILES.items():
         for name, text in files.items():
             write(path / "tests" / task_id / name, text)
     write_jsonl(path / "tasks.jsonl", [dict(task) for task in TASKS])
     manifest, generation, records = [], [], []
-    for number, case in enumerate(CASES, 1):
-        gen_id = GEN_IDS[case.label]
+    for number, case in enumerate(cases, 1):
+        gen_id = gen_ids[case.label]
         manifest.append({"gen_id": gen_id, "prompt_file": f"prompts/{gen_id}.txt",
                          "output_file": f"{gen_id}.md", "task_id": case.task_id,
                          "smell": case.smell, "condition": case.condition, "dose": None,
@@ -252,7 +262,7 @@ def build(path: Path) -> FxRg10:
     write_jsonl(path / "manifest.jsonl", manifest)
     write_jsonl(path / "generation.jsonl", generation)
     write_jsonl(path / "execution.jsonl", records)
-    return FxRg10(path, dict(GEN_IDS))
+    return FxRg10(path, gen_ids, version)
 
 
 def _generation(gen_id: str, number: int, case: Case) -> dict[str, object]:
