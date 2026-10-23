@@ -1,6 +1,6 @@
 """The run identifier and canonical run file (FR-48, FR-52; Task 7 Day 6 decision 4).
 
-Checks: the formula, written out by hand; determinism; store and key_file left out;
+Checks: the formula, written out by hand; determinism; store, key_file and lint_cache left out;
 representation-only differences giving one identifier; every parameter giving a new
 one; and no merging of inputs nothing authoritative calls equal (list order, URL form).
 """
@@ -68,9 +68,14 @@ def test_the_identifier_is_deterministic(tmp_path: Path) -> None:
     ("store: research.db", "store: other/place.db"),
     ("key_file: ~/.tdea/research.key", "key_file: /elsewhere/k.key"),
     ("key_file: ~/.tdea/research.key\n", ""),
+    ("key_file: ~/.tdea/research.key\n",
+     "key_file: ~/.tdea/research.key\nlint_cache: ~/.tdea/lintcache.db\n"),
+    ("key_file: ~/.tdea/research.key\n",
+     "key_file: ~/.tdea/research.key\nlint_cache: /elsewhere/cache.db\n"),
 ])
-def test_store_and_key_file_are_not_part_of_it(tmp_path: Path, old: str, new: str) -> None:
-    """FR-48: store and key_file are left out of the canonical run file and the identifier."""
+def test_store_key_file_and_lint_cache_are_not_part_of_it(tmp_path: Path, old: str,
+                                                          new: str) -> None:
+    """FR-48: store, key_file and lint_cache are left out of the canonical run file and id."""
     base, changed = parse(tmp_path, schema_example()), \
         parse(tmp_path, schema_example().replace(old, new))
     assert canonical_text(changed) == canonical_text(base)

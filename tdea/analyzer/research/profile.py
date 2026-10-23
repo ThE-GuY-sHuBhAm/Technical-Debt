@@ -25,6 +25,8 @@ temporary folder, as ``sys.executable -I -m pylint --rcfile=<empty> --disable=<l
 --output-format=json --persistent=n <file>``, with PYTHONPATH and PYLINTRC removed,
 PYLINTHOME inside the temporary folder (so Pylint writes nothing elsewhere) and a 120 s
 limit. It is the research engine's only process (the no-execution guard's one exception).
+lint_in_tree() (FR-61) runs the same process on one file inside a temporary copy of an
+RG10 variant, with the smell mapping's rules also enabled; it never uses the cache.
 
 A file fails to lint (FR-51 e) with one of four fixed reasons, never Pylint's own text,
 which can contain the temporary folder's path: decode error when the content does not
@@ -63,6 +65,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import site
 import subprocess
 import sys
@@ -71,7 +74,7 @@ import tempfile
 import tokenize
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Protocol
 
 import astroid
@@ -251,11 +254,14 @@ class ResearchProfile:
             "radon_version": facts.radon,
         }
 
-    def pylint_command(self, rcfile: Path, file_name: str) -> list[str]:
-        """Return the Pylint command for one file in the current folder."""
-        return [sys.executable, "-I", "-m", "pylint", f"--rcfile={rcfile}",
-                f"--disable={','.join(DISABLED_MESSAGES)}", "--output-format=json",
-                "--persistent=n", file_name]
+    def pylint_command(self, rcfile: Path, file_name: str,
+                       enable: tuple[str, ...] = ()) -> list[str]:
+        """Return the Pylint command for one file, relative to the current folder."""
+        command = [sys.executable, "-I", "-m", "pylint", f"--rcfile={rcfile}",
+                   f"--disable={','.join(DISABLED_MESSAGES)}"]
+        if enable:
+            command.append(f"--enable={','.join(enable)}")
+        return command + ["--output-format=json", "--persistent=n", file_name]
 
     def lint(self, content: bytes, file_name: str, *, blob_sha: str | None = None,
              cache: LintCachePort | None = None) -> LintResult:
@@ -276,6 +282,31 @@ class ResearchProfile:
             cache.put(blob_sha, file_name, self.profile_hash(), result)
         return result
 
+    def lint_in_tree(self, tree: Path, target: str, content: bytes,
+                     enable: tuple[str, ...] = ()) -> LintResult:
+        """Lint ``content`` as the file ``target`` inside a temporary copy of ``tree``.
+
+        FR-61: an RG10 modified module is linted inside its variant copy, with the smell
+        mapping's rules enabled in addition to the profile. ``tree`` is copied (symbolic
+        links are copied as links and never followed), ``content`` replaces ``target``
+        (a relative POSIX path) in the copy, and Pylint runs from the copy's root on that
+        one file, exactly as lint() runs it otherwise: isolated, with the explicit empty
+        rcfile, so no pylintrc, pyproject.toml or init-hook inside the tree has any
+        effect (NFR-26). Results are never cached: the tree is part of the context.
+        """
+        parts = PurePosixPath(target).parts
+        if not parts or PurePosixPath(target).is_absolute() or ".." in parts \
+                or parts[0].startswith("-"):
+            raise ValueError(f"not a relative path inside the tree: {target!r}")
+        if not _decodes(content):
+            return LintResult(FAILED, DECODE_ERROR, ())
+        with tempfile.TemporaryDirectory(prefix="tdea-lint-") as temporary:
+            root = Path(temporary)
+            folder = root / "lint"
+            shutil.copytree(tree, folder, symlinks=True)
+            (folder.joinpath(*parts)).write_bytes(content)
+            return self._pylint(root, folder, target, content, enable)
+
     def _lint_fresh(self, content: bytes, file_name: str) -> LintResult:
         """Run Pylint on the file alone in a new temporary folder, removed afterwards."""
         if not _decodes(content):
@@ -285,19 +316,24 @@ class ResearchProfile:
             folder = root / "lint"
             folder.mkdir()
             (folder / file_name).write_bytes(content)
-            rcfile = root / "empty.pylintrc"
-            rcfile.write_bytes(RCFILE.encode("utf-8"))
-            home = root / "pylinthome"
-            home.mkdir()
-            environment = {name: value for name, value in os.environ.items()
-                           if name.upper() not in ("PYTHONPATH", "PYLINTRC")}
-            environment["PYLINTHOME"] = str(home)
-            try:
-                completed = subprocess.run(self.pylint_command(rcfile, file_name), cwd=folder,
-                                           env=environment, capture_output=True,
-                                           timeout=self._time_limit, check=False)
-            except subprocess.TimeoutExpired:
-                return LintResult(FAILED, TIME_OUT, ())
+            return self._pylint(root, folder, file_name, content, ())
+
+    def _pylint(self, root: Path, folder: Path, target: str, content: bytes,
+                enable: tuple[str, ...]) -> LintResult:
+        """Run the one isolated Pylint process on ``target`` in ``folder`` (NFR-26)."""
+        rcfile = root / "empty.pylintrc"
+        rcfile.write_bytes(RCFILE.encode("utf-8"))
+        home = root / "pylinthome"
+        home.mkdir()
+        environment = {name: value for name, value in os.environ.items()
+                       if name.upper() not in ("PYTHONPATH", "PYLINTRC")}
+        environment["PYLINTHOME"] = str(home)
+        try:
+            completed = subprocess.run(self.pylint_command(rcfile, target, enable), cwd=folder,
+                                       env=environment, capture_output=True,
+                                       timeout=self._time_limit, check=False)
+        except subprocess.TimeoutExpired:
+            return LintResult(FAILED, TIME_OUT, ())
         return _interpret(completed.returncode, completed.stdout, content)
 
 

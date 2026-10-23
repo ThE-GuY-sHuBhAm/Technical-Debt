@@ -12,16 +12,23 @@ message repeats a token or raw exception text.
 Where the frozen texts are silent, these readings apply (Task 7 report):
 
 * A key the frozen schema shows is required unless the schema marks it optional or gives
-  its default: key_file, cutoff, head and a window's commits are optional (null means
-  "not given"); kind, store, w_months, repositories, url, windows, start and end are
+  its default: key_file, lint_cache, cutoff, head and a window's commits are optional
+  (null means "not given"); kind, store, w_months, repositories, url, windows, start and end are
   required, and a required key set to null counts as missing.
 * A missing tau or seeds is refused as not yet settled (blocked), not guessed: the schema
   shows both without an optional note, but FR-56 and the glossary give tau a default of
   0.7, and FR-48 only records seeds.
-* ``lint_cache`` is in SRS v2.3's schema but not in the Freeze's, and which governs is not
-  settled (Task 7 decision 3), so the key is refused as not yet supported (blocked).
-* RG10 run files are refused as not yet supported: their keys are open (CL-05, CL-06)
-  and their validation arrives with FR-58.
+* ``lint_cache`` (Freeze revision 116, FR-48 schema and FR-52): an optional path to
+  lintcache.db, default ~/.tdea/lintcache.db, not part of the run identifier. Like
+  key_file it is read relative to the run file's folder with ``~`` expanded. An earlier
+  copy of the Freeze lacked the key and it was refused as unresolved; revision 116 has it
+  (Stage 3, E-2), so nothing about it remains open.
+* RG10 run files (sprint 23 Oct): the keys are the ones the frozen schema shows, kind,
+  store and bundle required and smell_mapping optional (default T1 = W0718 + W0702,
+  T2 = C0209). The frozen RG10 schema has no key_file, lint_cache or seeds (CL-05), so
+  they are refused as unknown keys; RG10 runs use the default key file for the key
+  fingerprint in their identifier. CL-06 is open, so validate checks the run file only;
+  the bundle itself is checked when the run starts (FR-58, exit 1).
 * A token is a GitHub access token in a prefixed form (ghp_, gho_, ghu_, ghs_, ghr_ or
   github_pat_ followed by its characters), found in the file's text (comments included)
   or in any key or string value once YAML escapes are resolved. Such a file gets only the
@@ -52,20 +59,19 @@ from typing import Protocol
 import yaml
 
 from tdea.analyzer.research.engine import UrlRejected
+from tdea.analyzer.research.rg10.bundle import DEFAULT_SMELL_MAPPING, checked_mapping
 
 INVALID = "Invalid run file"
 UNSUPPORTED = "Not yet supported"
 
 RG1_REQUIRED = ("kind", "store", "seeds", "w_months", "tau", "repositories")
-RG1_OPTIONAL = ("key_file", "cutoff")
+RG10_REQUIRED = ("kind", "store", "bundle")
+RG10_OPTIONAL = ("smell_mapping",)
+RG1_OPTIONAL = ("key_file", "lint_cache", "cutoff")
 REPOSITORY_REQUIRED = ("url", "windows")
 REPOSITORY_OPTIONAL = ("head",)
 WINDOW_REQUIRED = ("start", "end")
 WINDOW_OPTIONAL = ("commits",)
-UNRESOLVED_KEYS = {
-    "lint_cache": ("The key 'lint_cache' is in SRS v2.3's run-file schema but not in the "
-                   "Specification Freeze's, and which of the two governs is not yet decided."),
-}
 TAU_VALUES = (0.5, 0.6, 0.7, 0.8)
 
 UNSETTLED_WHEN_MISSING = {
@@ -144,6 +150,7 @@ class RunFile:
     kind: str
     store: str
     key_file: str | None
+    lint_cache: str | None
     seeds: Mapping[str, int]
     w_months: int
     tau: float
@@ -156,6 +163,22 @@ class RunFile:
         return sum(len(repository.windows) for repository in self.repositories)
 
 
+@dataclass(frozen=True)
+class Rg10RunFile:
+    """A validated RG10 run file: one bundle evaluation (FR-48, FR-58)."""
+
+    kind: str
+    store: str
+    bundle: str
+    smell_mapping: tuple[tuple[str, tuple[str, ...]], ...]
+    key_file: None = None  # CL-05: not an RG10 key; the default key file is used
+
+    @property
+    def unit_count(self) -> int:
+        """Return the number of units: one, the bundle (NFR-25)."""
+        return 1
+
+
 class UrlChecker(Protocol):
     """The FR-02 check the analyzer's ResearchEngine provides."""
 
@@ -163,7 +186,8 @@ class UrlChecker(Protocol):
         """Return an object with owner and name, or raise UrlRejected."""
 
 
-def read_run_file(path: Path | str, checker: UrlChecker, now: datetime) -> RunFile:
+def read_run_file(path: Path | str, checker: UrlChecker,
+                  now: datetime) -> RunFile | Rg10RunFile:
     """Read and validate the run file at ``path``; raise RunFileInvalid with every problem."""
     text = _read_text(Path(path))
     if _TOKEN.search(text):
@@ -275,6 +299,7 @@ class _Validator:
         """Use ``checker`` for FR-02 and ``now`` (UTC) for the cut-off rule."""
         self._checker = checker
         self._now = now.astimezone(timezone.utc)
+        self._schema = "RG1"
         self.problems: list[Problem] = []
 
     def add(self, cause: str, action: str, error_type: str = INVALID,
@@ -282,7 +307,7 @@ class _Validator:
         """Record one problem."""
         self.problems.append(Problem(error_type, cause, action, blocked))
 
-    def run_file(self, document: object) -> RunFile:
+    def run_file(self, document: object) -> RunFile | Rg10RunFile:
         """Validate the whole document and return the run file, or raise RunFileInvalid."""
         if not isinstance(document, dict):
             raise RunFileInvalid([Problem(
@@ -290,11 +315,7 @@ class _Validator:
                 "Start from the run-file schema in SRS 4.5.2.")])
         kind = document.get("kind")
         if kind == "rg10":
-            raise RunFileInvalid([Problem(
-                UNSUPPORTED, "RG10 run-file validation arrives with RG10 bundle ingestion "
-                "(FR-58), and the RG10 run-file keys are still open (CL-05, CL-06).",
-                "Use an RG1 run file; RG10 evaluation is not available in this version.",
-                blocked=True)])
+            return self._rg10(document)
         if kind != "rg1":
             cause = ("The required key 'kind' is missing." if "kind" not in document
                      else "kind must be rg1 or rg10.")
@@ -303,6 +324,7 @@ class _Validator:
         values = {
             "store": self._text(document.get("store"), "store", "store: research.db"),
             "key_file": self._optional_text(document.get("key_file"), "key_file"),
+            "lint_cache": self._optional_text(document.get("lint_cache"), "lint_cache"),
             "seeds": self._seeds(document.get("seeds")),
             "w_months": self._w_months(document.get("w_months")),
             "tau": self._tau(document.get("tau")),
@@ -313,19 +335,33 @@ class _Validator:
             raise RunFileInvalid(self.problems)
         return RunFile(kind="rg1", **values)
 
+    def _rg10(self, document: dict) -> Rg10RunFile:
+        """Validate an RG10 run file (CL-05 and CL-06 readings above)."""
+        self._schema = "RG10"
+        self._keys(document, RG10_REQUIRED, RG10_OPTIONAL, "", self._missing_top)
+        store = self._text(document.get("store"), "store", "store: research.db")
+        bundle = self._text(document.get("bundle"), "bundle", "bundle: bundles/rg10-01")
+        mapping = document.get("smell_mapping")
+        try:
+            checked = checked_mapping(DEFAULT_SMELL_MAPPING if mapping is None else mapping)
+        except ValueError:
+            self.add("smell_mapping must map each smell type to a list of Pylint message IDs.",
+                     "Write it as smell_mapping: {T1: [W0718, W0702], T2: [C0209]}, or "
+                     "remove it to use that default.")
+            checked = ()
+        if self.problems:
+            raise RunFileInvalid(self.problems)
+        return Rg10RunFile(kind="rg10", store=store, bundle=bundle, smell_mapping=checked)
+
     # --- keys -------------------------------------------------------------------------
 
     def _keys(self, mapping: dict, required: tuple[str, ...], optional: tuple[str, ...],
               where: str, missing: Callable[[str, str], None]) -> None:
-        """Report unknown, not-yet-supported and missing keys of one mapping."""
+        """Report unknown and missing keys of one mapping."""
         allowed = required + optional
         for key in mapping:
-            if key in UNRESOLVED_KEYS and not where:
-                self.add(UNRESOLVED_KEYS[key],
-                         f"Remove {key} from the run file until the specification "
-                         "settles this key.", UNSUPPORTED, blocked=True)
-            elif key not in allowed:
-                self.add(f"{where}{_shown(key)} is not part of the RG1 run-file "
+            if key not in allowed:
+                self.add(f"{where}{_shown(key)} is not part of the {self._schema} run-file "
                          "schema.", f"Remove it; the allowed keys here are "
                          f"{_listing(allowed)}.")
         for key in required:

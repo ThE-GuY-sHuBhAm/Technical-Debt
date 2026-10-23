@@ -91,3 +91,13 @@ def test_lint_cache_implements_the_analyzer_port(cache: LintCache) -> None:
     port: LintCachePort = cache
     assert callable(port.get) and callable(port.put)
     
+
+def test_lookups_are_counted_as_hits_and_misses(cache: LintCache) -> None:
+    """RE-20: each get() counts a hit or a miss; put() and a refused put count nothing."""
+    assert (cache.hits, cache.misses) == (0, 0)
+    assert cache.get(BLOB, "a.py", PROFILE) is None
+    cache.put(BLOB, "a.py", PROFILE, RESULT)
+    cache.put(BLOB, "a.py", PROFILE, RESULT)  # already stored: no lookup is counted
+    assert cache.get(BLOB, "a.py", PROFILE) == RESULT
+    assert cache.get(BLOB, "a.py", PROFILE) == RESULT
+    assert (cache.hits, cache.misses) == (2, 1)

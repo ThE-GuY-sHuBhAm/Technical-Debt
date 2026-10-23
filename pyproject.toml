@@ -46,6 +46,6 @@ include = ["tdea*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# The CI gate scripts in tools/ are not part of the tdea package; their tests import
-# them from there.
-pythonpath = ["tools", "tests/fixtures"]
+# The CI gate scripts in tools/ and the RG10 research harness in harness/ are not part
+# of the tdea package; their tests import them from there.
+pythonpath = ["tools", "tests/fixtures", "harness"]

@@ -756,3 +756,34 @@ class _Reader:
                           name.as_posix(), row.text("task_id"), row.text("smell"),
                           row.text("condition"), row.optional_name("dose"),
                           row.integer("replicate"), row.integer("run_order"), metadata, text)
+
+
+def bundle_content_hash(root: Path | str) -> str:
+    """Return the bundle content hash that identifies an RG10 bundle (FR-48, run identifier).
+
+    The frozen texts name the hash but do not define it (sprint 23 Oct, provisional):
+    SHA-256 over the sorted UTF-8 lines "path TAB file SHA-256", one per regular file in
+    the bundle folder, with POSIX paths relative to it, as tree_sha256 hashes a tree. The
+    folder's own name and location, and file times, do not count, so a copied bundle keeps
+    its hash. A symbolic link or a file name holding a line break is refused, since either
+    would make the listing ambiguous.
+    """
+    root = Path(root)
+    if not root.is_dir():
+        raise BundleInvalid(str(root), None, None, "is not a bundle folder")
+    lines = []
+    for directory, folders, names in os.walk(root, onerror=_raise):
+        folders.sort()
+        for name in folders + names:
+            path = Path(directory, name)
+            relative = path.relative_to(root).as_posix()
+            if path.is_symlink() or LINE_BREAK in name:
+                raise BundleInvalid(escaped(relative), None, None,
+                                    "cannot be hashed: symbolic links and names with a line "
+                                    "break are not allowed in a bundle")
+        for name in names:
+            path = Path(directory, name)
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            lines.append(f"{path.relative_to(root).as_posix()}\t{digest}")
+    listing = "".join(f"{line}\n" for line in sorted(lines))
+    return hashlib.sha256(listing.encode("utf-8")).hexdigest()

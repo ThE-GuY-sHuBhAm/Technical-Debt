@@ -19,7 +19,6 @@ rules (CL-03). RE-13 is therefore PARTIAL.
 
 from __future__ import annotations
 
-import importlib
 import subprocess
 import tokenize
 from datetime import datetime, timedelta, timezone
@@ -34,6 +33,8 @@ from run_support import (FX_RG1_URL, PINNED_FACTS, LocalAccess, TickingClock, Wo
                          run_file_text, synthetic_rules_v4)
 
 from tdea.aggregator.key_store import KeyStore
+from tdea.aggregator.research_export import RecordFile, data_dictionary, describe
+from tdea.aggregator.research_models import Covariate
 from tdea.aggregator.research_service import ResearchService
 from tdea.analyzer.research.engine import ResearchEngine, Rg1Rules, RulesIncomplete
 from tdea.analyzer.research.profile import FAILED, OK, LintMessage, LintResult
@@ -491,13 +492,16 @@ def test_account_tenure_is_computed(re13: Workspace) -> None:
     assert all(row["account_tenure_days"] is not None for row in stored(re13).values())
 
 
-@pytest.mark.xfail(strict=True, raises=ModuleNotFoundError,
-                   reason="BLOCKED: FR-62 and CL-14. The exploratory fields are marked in "
-                          "data_dictionary.csv, which ResearchExporter (deferred) writes")
 def test_exploratory_fields_are_marked_in_the_data_dictionary() -> None:
-    """RE-13: "exploratory fields present and marked" (FR-57 outputs; FR-62)."""
-    exporter = importlib.import_module("tdea.api.research_exporter")
-    assert exporter.exploratory_columns("covariate") == set(EXPLORATORY)
+    """RE-13: "exploratory fields present and marked" (FR-57 outputs; FR-62, sprint 23 Oct).
+
+    data_dictionary.csv flags exactly the three exploratory covariate columns; the
+    export test (test_re19_export) shows the flag in a written file.
+    """
+    names = list(Covariate.__table__.columns.keys())
+    assert set(EXPLORATORY) <= set(names)
+    record = RecordFile("covariate", tuple(describe("covariate", name, str) for name in names))
+    assert {row[1] for row in data_dictionary([record]) if row[6]} == set(EXPLORATORY)
 
 
 @pytest.mark.xfail(strict=True, raises=RulesIncomplete,

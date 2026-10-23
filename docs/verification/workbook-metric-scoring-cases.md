@@ -1,6 +1,6 @@
 # Workbook v1.2: metric and scoring cases, automated results
 
-Branch `product-implementation` (first recorded on `sprint-implementation`), 23 Oct 2026. Sheets STATIC ANALYSIS (TC-034 to TC-054)
+Branch `sprint-implementation`, 23 Oct 2026. Sheets STATIC ANALYSIS (TC-034 to TC-054)
 and DEBT SCORING (TC-068 to TC-085) of `TestCases_TechnicalDebtEvaluator_v1.2.xlsx`.
 Tests: `tests/product/test_workbook_cases.py`, each named after its case, asserting the
 EXPECTED RESULT as written. Run on Python 3.11 (Linux) with the pinned radon and Pylint.

@@ -137,11 +137,12 @@ def test_usage_errors_exit_1_and_export_does_not_exist(
     assert "error:" in capsys.readouterr().err
 
 
-def test_help_lists_validate_run_and_status(capsys: pytest.CaptureFixture[str]) -> None:
-    """tdea research --help names validate, run and status; export is not offered yet."""
+def test_help_lists_validate_run_status_and_export(
+        capsys: pytest.CaptureFixture[str]) -> None:
+    """tdea research --help names validate, run, status and export (FR-48, FR-62)."""
     assert main(["research", "--help"]) == EXIT_OK
     out = capsys.readouterr().out
     assert "validate" in out and "check a run file without side effects" in out
-    assert "run" in out and "status" in out and "export command is not part" in out
+    assert "run" in out and "status" in out and "export the records of complete runs" in out
     assert main(["research"]) == EXIT_OK
     assert main([]) == EXIT_OK

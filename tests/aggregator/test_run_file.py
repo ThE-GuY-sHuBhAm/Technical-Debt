@@ -15,7 +15,7 @@ import pytest
 from run_files import schema_example
 
 from tdea.aggregator.research_service import ResearchService
-from tdea.aggregator.run_file import INVALID, UNSUPPORTED, RunFileInvalid
+from tdea.aggregator.run_file import INVALID, UNSUPPORTED, Rg10RunFile, RunFileInvalid
 from tdea.analyzer.research.engine import ResearchEngine, UrlRejected
 
 NOW = datetime(2026, 10, 12, 12, 0, tzinfo=timezone.utc)
@@ -152,7 +152,7 @@ def test_required_keys_must_be_present(tmp_path: Path, key: str) -> None:
 
 
 def test_optional_keys_may_be_left_out(tmp_path: Path) -> None:
-    """key_file, cutoff, head and a window's commits are optional."""
+    """key_file, lint_cache, cutoff, head and a window's commits are optional."""
     text = (VALID.replace("key_file: ~/.tdea/research.key\n", "")
             .replace("cutoff: null\n", "").replace("    head: null\n", "")
             .replace(f", commits: [{SHA_A}, {SHA_B}]", ""))
@@ -232,27 +232,58 @@ def test_a_token_anywhere_rejects_the_file_without_echoing_it(
         assert canary_token not in repr(reported)
 
 
-def test_lint_cache_is_refused_as_unresolved_between_srs_and_freeze(tmp_path: Path) -> None:
-    """lint_cache is in SRS v2.3 but not the Freeze; it stays blocked (Task 7 decision 3)."""
-    reported = problems(tmp_path, VALID + "lint_cache: ~/.tdea/lintcache.db\n")
-    assert [(problem.error_type, problem.blocked) for problem in reported] == [
-        (UNSUPPORTED, True)]
-    assert "SRS v2.3" in reported[0].cause and "Specification Freeze" in reported[0].cause
+def test_lint_cache_is_an_optional_path(tmp_path: Path) -> None:
+    """Freeze rev. 116 FR-48 schema: lint_cache is an optional path; null means the default."""
+    assert check(tmp_path, VALID).lint_cache is None
+    run = check(tmp_path, VALID + "lint_cache: ~/.tdea/lintcache.db\n")
+    assert run.lint_cache == "~/.tdea/lintcache.db"
+    assert check(tmp_path, VALID + "lint_cache: null\n").lint_cache is None
 
 
-@pytest.mark.xfail(strict=True, raises=RunFileInvalid,
-                   reason="lint_cache: SRS v2.3 lists it, the Freeze does not; precedence "
-                          "is not settled (Task 7 decision 3)")
-def test_lint_cache_is_accepted_as_srs_v23_states(tmp_path: Path) -> None:
-    """SRS 4.5.2: lint_cache is an optional key (blocked until the conflict is decided)."""
-    check(tmp_path, VALID + "lint_cache: ~/.tdea/lintcache.db\n")
+def test_a_lint_cache_of_the_wrong_shape_is_rejected(tmp_path: Path) -> None:
+    """lint_cache, like key_file, must be a file path or null."""
+    assert causes(tmp_path, VALID + "lint_cache: 5\n") == [
+        "lint_cache must be a file path or null."]
 
 
-def test_rg10_run_files_are_refused_as_not_yet_supported(tmp_path: Path) -> None:
-    """RG10 run-file validation arrives with FR-58; its keys are open (CL-05, CL-06)."""
-    reported = problems(tmp_path, "kind: rg10\nstore: research.db\nbundle: b\n")
-    assert [(problem.error_type, problem.blocked) for problem in reported] == [
-        (UNSUPPORTED, True)]
+RG10 = "kind: rg10\nstore: research.db\nbundle: bundles/rg10-01\n"
+
+
+def test_an_rg10_run_file_takes_the_default_smell_mapping(tmp_path: Path) -> None:
+    """RG10 keys (sprint 23 Oct reading of CL-05/CL-06): kind, store, bundle; mapping optional."""
+    run_file = check(tmp_path, RG10)
+    assert isinstance(run_file, Rg10RunFile)
+    assert (run_file.store, run_file.bundle, run_file.unit_count) == (
+        "research.db", "bundles/rg10-01", 1)
+    assert run_file.smell_mapping == (("T1", ("W0718", "W0702")), ("T2", ("C0209",)))
+
+
+def test_an_rg10_run_file_may_name_its_smell_mapping(tmp_path: Path) -> None:
+    """A smell mapping in the run file replaces the default, sorted by smell type."""
+    run_file = check(tmp_path, RG10 + "smell_mapping: {T2: [C0209], T1: [W0702]}\n")
+    assert run_file.smell_mapping == (("T1", ("W0702",)), ("T2", ("C0209",)))
+
+
+@pytest.mark.parametrize("extra", ["key_file: k.key\n", "lint_cache: c.db\n", "seeds: {s: 1}\n",
+                                   "w_months: 6\n"])
+def test_rg1_keys_are_not_rg10_keys(tmp_path: Path, extra: str) -> None:
+    """CL-05 is open, so no key beyond the frozen RG10 schema is accepted."""
+    (cause,) = causes(tmp_path, RG10 + extra)
+    assert "is not part of the RG10 run-file schema" in cause
+
+
+@pytest.mark.parametrize("mapping", ["[W0718]", "{T1: []}", "{T1: W0718}", "{}", "{T1: [1]}"])
+def test_a_malformed_smell_mapping_is_rejected(tmp_path: Path, mapping: str) -> None:
+    """smell_mapping must map each smell type to a non-empty list of message IDs."""
+    (cause,) = causes(tmp_path, RG10 + f"smell_mapping: {mapping}\n")
+    assert cause.startswith("smell_mapping must map each smell type")
+
+
+@pytest.mark.parametrize("key", ["store", "bundle"])
+def test_rg10_required_keys_must_be_present(tmp_path: Path, key: str) -> None:
+    """store and bundle are required; the bundle itself is checked when the run starts."""
+    text = "".join(line + "\n" for line in RG10.splitlines() if not line.startswith(key))
+    assert any(key in cause for cause in causes(tmp_path, text))
 
 
 @pytest.mark.parametrize("text, cause", [
