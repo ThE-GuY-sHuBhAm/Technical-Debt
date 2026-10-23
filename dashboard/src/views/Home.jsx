@@ -43,7 +43,7 @@ export default function Home() {
           each analysed commit and stores the results on this computer.
         </p>
         <form className="form" onSubmit={submit} noValidate>
-          <label htmlFor="url">GitHub repository URL</label>
+          <label htmlFor="url">GitHub Repository URL</label>
           <input id="url" name="url" type="url" autoFocus autoComplete="off" spellCheck="false"
             placeholder="https://github.com/owner/repository" value={url}
             onChange={(event) => setUrl(event.target.value)} aria-describedby="url-help" />
@@ -99,7 +99,7 @@ export default function Home() {
                       <td className="num">{row.commits_analysed ?? '–'}</td>
                       <td>{utcDate(row.last_completed_at)}</td>
                       <td>
-                        {row.status === 'Running'
+                        {row.status === 'Running' || row.status === 'Pending'
                           ? <Link to={href('/progress', { repo: row.repository_id })}>Show progress</Link>
                           : <Link to={href('/overview', { repo: row.repository_id })}>Open</Link>}
                       </td>

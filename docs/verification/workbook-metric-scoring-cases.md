@@ -58,9 +58,9 @@ the Product Owner's decision.
 | TC-049 | Syntax error logged with path, hash, `SyntaxError`; analysis completes | End to end | Passed |
 | TC-050 | Latin-1 file logged with `UnicodeDecodeError`; others analysed | End to end | Passed |
 | TC-051 | Empty and binary .py files logged and skipped; status Complete | End to end | Passed |
-| TC-052 | Progress page within 2 s (FX-L) | Browser | **Backend part passed** (POST answers 202 in under 2 s for generated FX-L); the browser part is not executed |
-| TC-053 | Pages navigable during a run (FX-L) | Browser | **Backend part passed** (other endpoints answer 200 during the FX-L run, which completes); the browser part is not executed |
-| TC-054 | ≥ 10 integer, non-decreasing progress values ending at 100 (FX-100) | Frontend | **Backend part passed** (every value the engine emits for generated FX-100); the values received by the frontend are not recorded |
+| TC-052 | Progress page within 2 s (FX-L) | Backend and browser | Passed: POST answers 202 in under 2 s; in Chrome the progress page shows within 2 s of the click (see `workbook-browser-cases.md`) |
+| TC-053 | Pages navigable during a run (FX-L) | Backend and browser | Passed: other endpoints answer 200 during the run; in Chrome, Home, an overview and a commit history load during the FX-L run, which completes |
+| TC-054 | ≥ 10 integer, non-decreasing progress values ending at 100 (FX-100) | Backend and browser | Passed: the values the engine emits, and the values the frontend received and the bar showed in Chrome |
 | TC-068 | [100, 150, 200] → [0.0, 0.5, 1.0] | Component | Passed |
 | TC-069 | Five normalised metrics in 0.0–1.0 with min 0, max 1 | End to end (generated FX-M) | Passed |
 | TC-070 | Constant MI → all 0.0, no error | Component | Passed (expected value is the OI-01 proposal, not yet approved) |
@@ -80,10 +80,9 @@ the Product Owner's decision.
 | TC-084 | Stable, Drop, Drop, Stable: commits 2–3 Refactoring Event | Component | Passed |
 | TC-085 | 5 Stable = Stable Phase; 4 Stable then Spike = none | Component | Passed |
 
-Summary: 35 of 39 cases pass as automated tests (13 of them on the end-to-end path
-with stored rows, 4 more on the generated FX-M and FX-RISK). TC-048 is partly executed
-because of the conflict below. TC-052, TC-053 and TC-054 pass their backend part only;
-their browser part is not executed.
+Summary: 38 of 39 cases pass as automated tests (13 of them on the end-to-end path
+with stored rows, 4 more on the generated FX-M and FX-RISK, and TC-052 to TC-054 in the
+browser as well). TC-048 is partly executed because of the conflict below.
 
 ## Other cases unlocked by the generated fixtures (23 Oct)
 
@@ -96,7 +95,7 @@ with only the FR-03 check stubbed:
 | TC-026 | FX-101, default N = 2: #1, #3 … #101 (51) | Passed |
 | TC-027 | FX-102, N = 4: #1, #5 … #101 and HEAD #102 (27) | Passed |
 | TC-028 | FX-101, N = 1: all 101 | Passed |
-| TC-033 | FX-M, Cancel at 30 %: temporary clone removed | **Partly passed**: the case also expects the status 'Cancelled', but FR-30 allows only Pending, Running, Complete and Error; TDEA shows Error with "Analysis cancelled" |
+| TC-033 | FX-M, Cancel at 30 %: temporary clone removed (also in Chrome, `workbook-browser-cases.md`) | **Partly passed**: the case also expects the status 'Cancelled', but FR-30 allows only Pending, Running, Complete and Error; TDEA shows Error with "Analysis cancelled" |
 | TC-067 | FX-M, Cancel at 30 %: audit entry with processed < requested | Passed after a fix: the cancelled run's audit line had no "commits requested"; it now records the selected and the analysed commits |
 | TC-122 | FX-UP 'Increasing', FX-DOWN 'Decreasing' (compared) | Passed (trend rule is the OI-05 proposal) |
 | TC-126 | FX-XL (500 commits), N = 3, ≤ 900 s | Runs only with TDEA_SLOW_TESTS=1; see the evidence of the run |

@@ -9,6 +9,7 @@ export class ApiFailure extends Error {
     this.type = error.type;
     this.cause = error.cause;
     this.action = error.action;
+    this.field = error.field ?? null; // url_1 or url_2 when one comparison URL failed
   }
 }
 

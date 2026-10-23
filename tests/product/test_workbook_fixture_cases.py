@@ -13,7 +13,7 @@ which case they run and at which level:
   conflict, not as passed.
 * TC-052 to TC-054 are browser cases. Here only their backend part is checked through
   the REST API (the 202 answer, other endpoints during a run, and the FR-18 values the
-  engine emits); the browser part is not executed by these tests.
+  engine emits); tests/browser/test_progress_view.py runs them in Chrome.
 
 TC-126 (FX-XL, 500 commits, N = 3, at most 900 s) runs only with TDEA_SLOW_TESTS=1 and
 is reported as skipped otherwise. The workbook's ACTUAL RESULT and STATUS columns are
@@ -77,12 +77,31 @@ def history_positions(path: Path, service, repository_id: int) -> list[int]:
     return [shas.index(sha) + 1 for sha in stored]
 
 
-def test_tc025_exactly_100_commits_are_not_sampled(counts, tmp_path: Path) -> None:
-    """TC-025: FX-100 (100 commits) is analysed in full."""
-    service = local_service(tmp_path, {"tdea-fixtures/fx-100": counts["fx-100"]})
+@pytest.fixture(name="fx_100_run", scope="module")
+def _fx_100_run(counts, tmp_path_factory: pytest.TempPathFactory):
+    """Analyse FX-100 once, recording every FR-18 value the engine emits (TC-025, TC-054)."""
+    service = local_service(tmp_path_factory.mktemp("fx100"),
+                            {"tdea-fixtures/fx-100": counts["fx-100"]})
+    emitted: list[int] = []
+    original = service._progress_callback  # pylint: disable=protected-access
+
+    def recording(repository_id: int):
+        update = original(repository_id)
+
+        def record(percent: int, processed: int, total: int, sha: str) -> None:
+            emitted.append(percent)
+            update(percent, processed, total, sha)
+        return record
+
+    service._progress_callback = recording  # pylint: disable=protected-access
     submission = analysed(service, url("fx-100"))
-    assert history_positions(counts["fx-100"], service, submission.repository_id) == \
-        list(range(1, 101))
+    return service, submission.repository_id, emitted
+
+
+def test_tc025_exactly_100_commits_are_not_sampled(counts, fx_100_run) -> None:
+    """TC-025: FX-100 (100 commits) is analysed in full."""
+    service, repository_id, _emitted = fx_100_run
+    assert history_positions(counts["fx-100"], service, repository_id) == list(range(1, 101))
 
 
 def test_tc026_101_commits_with_the_default_n(counts, tmp_path: Path) -> None:
@@ -175,20 +194,22 @@ def test_fx_l_has_200_commits(fx_l) -> None:
 
 
 def test_tc052_tc053_backend_returns_at_once_and_stays_responsive(
-        fx_l, counts, tmp_path: Path) -> None:
+        fx_l, tmp_path: Path) -> None:
     """TC-052 and TC-053, backend part only (the browser part is not executed here).
 
     POST /api/analyses for FX-L answers 202 within 2 seconds while the analysis runs in
     the background; during the run, the repository list and a previously analysed
     repository's endpoints answer 200, and the running analysis still completes.
     """
-    service = local_service(tmp_path, {"tdea-fixtures/fx-l": fx_l.path,
-                                       "tdea-fixtures/fx-100": counts["fx-100"]})
-    earlier = analysed(service, url("fx-100"))
+    fx_s = make_fx_product.build_fx_s(tmp_path / "fx-s")
+    service = local_service(tmp_path / "ws", {"tdea-fixtures/fx-l": fx_l.path,
+                                              "tdea-fixtures/fx-s": fx_s.path})
+    earlier = analysed(service, url("fx-s"))
     client = create_app(service).test_client()
     started = time.monotonic()
     response = client.post("/api/analyses", json={"url": url("fx-l")})
-    assert response.status_code == 202 and time.monotonic() - started < 2.0
+    elapsed = time.monotonic() - started
+    assert response.status_code == 202 and elapsed < 2.0, f"{elapsed:.2f} s"
     running = response.json["repository_id"]
     assert service.progress(running) is not None  # still running in the background
     for path in ("/api/repositories", f"/api/repositories/{earlier.repository_id}",
@@ -199,26 +220,13 @@ def test_tc052_tc053_backend_returns_at_once_and_stays_responsive(
     assert service.store.repository(running).status == "Complete"
 
 
-def test_tc054_backend_progress_values_for_fx_100(counts, tmp_path: Path) -> None:
+def test_tc054_backend_progress_values_for_fx_100(fx_100_run) -> None:
     """TC-054, backend part: every FR-18 value the engine emits for FX-100.
 
     At least 10 updates, integers 0-100, never decreasing, ending at 100. The values the
-    frontend receives (the case as written) are not recorded here.
+    frontend receives (the case as written) are checked by the browser tests.
     """
-    service = local_service(tmp_path, {"tdea-fixtures/fx-100": counts["fx-100"]})
-    emitted: list[int] = []
-    original = service._progress_callback  # pylint: disable=protected-access
-
-    def recording(repository_id: int):
-        update = original(repository_id)
-
-        def record(percent: int, processed: int, total: int, sha: str) -> None:
-            emitted.append(percent)
-            update(percent, processed, total, sha)
-        return record
-
-    service._progress_callback = recording  # pylint: disable=protected-access
-    analysed(service, url("fx-100"))
+    _service, _repository_id, emitted = fx_100_run
     assert len(emitted) >= 10
     assert all(isinstance(value, int) and 0 <= value <= 100 for value in emitted)
     assert emitted == sorted(emitted) and emitted[-1] == 100

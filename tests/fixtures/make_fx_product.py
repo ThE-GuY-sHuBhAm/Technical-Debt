@@ -17,13 +17,16 @@ one line each and ships none of them:
   module, so total SLOC varies too.
 * FX-L and FX-XL: Python repositories with 200 and 500 commits; each commit changes one
   of ten graded modules.
-* FX-100, FX-101, FX-102: exactly 100, 101 and 102 commits (sampling boundaries); one
-  module, then one changed line of CHANGES.txt per commit.
+* FX-100, FX-101, FX-102: exactly 100, 101 and 102 commits (sampling boundaries). Every
+  commit changes the one graded module, so each analysed commit is measured afresh and
+  an analysis takes long enough for the progress cases (TC-054, TC-098).
 * FX-RISK: 15 Python files, 3 of them deliberately complex and smelly.
 * FX-UP and FX-DOWN: 12 commits whose debt rises (falls) at every commit. Every graded
   module has the same SLOC; its level sets its branches and unused imports. FX-UP adds a
   module of the next level at each commit; FX-DOWN starts with all twelve and deletes
   the highest level at each commit.
+* fx-cmp-a and fx-cmp-b: TC-118's comparison pair, 10 commits from 1 Sep 2026 and 15
+  commits from 1 Oct 2026; the workbook names no fixture for them.
 
 These builders follow the workbook's descriptions. Whether they are accepted as the
 official fixtures is the Product Owner's decision (decision sheet item 4.3). FX-EMPTY
@@ -165,9 +168,9 @@ MAX_LEVEL = len(UNUSED_IMPORTS)
 START = datetime.fromisoformat("2026-09-01T10:00:00+05:30")
 
 
-def _hourly(number: int) -> str:
-    """Return the date of commit ``number`` (from 1): one an hour from 1 Sep 2026."""
-    return (START + timedelta(hours=number - 1)).isoformat()
+def _hourly(number: int, start: datetime = START) -> str:
+    """Return the date of commit ``number`` (from 1): one an hour from ``start``."""
+    return (start + timedelta(hours=number - 1)).isoformat()
 
 
 def graded_module(name: str, level: int, revision: int = 0) -> str:
@@ -189,10 +192,11 @@ def graded_module(name: str, level: int, revision: int = 0) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _build(path: Path, steps: list[tuple[str, dict[str, str | bytes | None]]]) -> BuiltFixture:
-    """Commit each (message, files) step with MAINTAINER, one an hour."""
+def _build(path: Path, steps: list[tuple[str, dict[str, str | bytes | None]]],
+           start: datetime = START) -> BuiltFixture:
+    """Commit each (message, files) step with MAINTAINER, one an hour from ``start``."""
     repo = FixtureRepo(path)
-    shas = tuple(repo.commit(message, files, author=MAINTAINER, date=_hourly(number))
+    shas = tuple(repo.commit(message, files, author=MAINTAINER, date=_hourly(number, start))
                  for number, (message, files) in enumerate(steps, start=1))
     return BuiltFixture(Path(path), shas)
 
@@ -233,11 +237,27 @@ def build_fx_count(path: Path, commits: int) -> BuiltFixture:
     """Build FX-100, FX-101 or FX-102: exactly ``commits`` commits."""
     steps: list[tuple[str, dict[str, str | bytes | None]]] = [(
         "Create the fxn package", {"fxn/__init__.py": '"""FX-N product fixture."""\n',
-                                   "fxn/core.py": graded_module("core", 3),
-                                   "CHANGES.txt": "Change 1\n"})]
-    steps += [(f"Note change {number}", {"CHANGES.txt": f"Change {number}\n"})
+                                   "fxn/core.py": graded_module("core", 1)})]
+    steps += [(f"Change core ({number})",
+               {"fxn/core.py": graded_module("core", number % (MAX_LEVEL + 1), number)})
               for number in range(2, commits + 1)]
     return _build(path, steps)
+
+
+CMP_STARTS = {"fx-cmp-a": (10, START),
+              "fx-cmp-b": (15, datetime.fromisoformat("2026-10-01T10:00:00+05:30"))}
+
+
+def build_fx_cmp(path: Path, key: str) -> BuiltFixture:
+    """Build TC-118's pair: fx-cmp-a, 10 commits in Sep, or fx-cmp-b, 15 commits in Oct."""
+    commits, start = CMP_STARTS[key]
+    steps: list[tuple[str, dict[str, str | bytes | None]]] = [(
+        "Create the fxc package", {"fxc/__init__.py": '"""Comparison fixture."""\n',
+                                   "fxc/core.py": graded_module("core", 1)})]
+    steps += [(f"Change core ({number})",
+               {"fxc/core.py": graded_module("core", (3 * number) % (MAX_LEVEL + 1), number)})
+              for number in range(2, commits + 1)]
+    return _build(path, steps, start)
 
 
 def build_fx_history(path: Path, commits: int) -> BuiltFixture:
@@ -300,6 +320,8 @@ BUILDERS = {
     "fx-101": lambda path: build_fx_count(path, 101),
     "fx-102": lambda path: build_fx_count(path, 102),
     "fx-risk": build_fx_risk, "fx-up": build_fx_up, "fx-down": build_fx_down,
+    "fx-cmp-a": lambda path: build_fx_cmp(path, "fx-cmp-a"),
+    "fx-cmp-b": lambda path: build_fx_cmp(path, "fx-cmp-b"),
 }
 
 

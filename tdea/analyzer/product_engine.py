@@ -111,7 +111,8 @@ class ProductEngine:
             return check_n(sampling_n)
         except ValueError:
             raise ProductError("invalid_sampling", "Invalid sampling interval",
-                               "The sampling interval N must be a whole number of at least 1.",
+                               "N must be 1 or more: the sampling interval N is a whole number of "
+                               "commits.",
                                f"Enter 1 to analyse every commit, or leave the default "
                                f"{DEFAULT_N}.") from None
 

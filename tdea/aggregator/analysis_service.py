@@ -11,7 +11,9 @@ submit() handles one URL submission, in this order:
    only. The token goes no further: it is not passed to the background thread, stored,
    logged or put in any message (NFR-19).
 5. FR-17: the analysis runs in a daemon thread, so the web interface stays responsive;
-   the thread releases the lock when it ends, however it ends.
+   the thread releases the lock when it ends, however it ends. The repository is
+   Pending (FR-30) from submission until its analysis begins, which for the second
+   repository of a comparison pair is after the first has finished, then Running.
 
 The thread clones, samples and analyses (ProductEngine), aggregates and scores each
 commit (scoring) and stores everything in one transaction (ProductStore.complete,
@@ -64,6 +66,7 @@ class SubmissionRefused(Exception):
         self.error_type = error_type
         self.cause = cause
         self.action = action
+        self.field: str | None = None  # "url_1" or "url_2" when one comparison URL failed
 
     @classmethod
     def wrap(cls, error: ProductError | LockUnavailable, kind: str | None = None
@@ -151,8 +154,13 @@ class AnalysisService:
     def _submit(self, urls: list[object], token: str | None, sampling_n: object,
                 refresh: bool) -> list[Submission]:
         """Validate, use the cache, take the lock, check and start the analyses."""
+        repos = []
+        for index, url in enumerate(urls):
+            try:
+                repos.append(self._engine.parse_url(url))
+            except ProductError as exc:
+                raise _for_field(SubmissionRefused.wrap(exc), urls, index) from None
         try:
-            repos = [self._engine.parse_url(url) for url in urls]
             interval = self._engine.check_sampling(sampling_n)
         except ProductError as exc:
             raise SubmissionRefused.wrap(exc) from None
@@ -178,9 +186,16 @@ class AnalysisService:
             raise SubmissionRefused.wrap(exc, "busy") from None
         try:
             for repo in pending:
-                self._engine.check(repo, token)
+                try:
+                    self._engine.check(repo, token)
+                except ProductError as exc:
+                    raise _for_field(SubmissionRefused.wrap(exc), urls,
+                                     repos.index(repo)) from None
             jobs = [(self._store.start(repo.key, repo.url, repo.owner, repo.name, interval,
                                        self._clock()), repo) for repo in pending]
+        except SubmissionRefused:
+            lock.release()
+            raise
         except ProductError as exc:
             lock.release()
             raise SubmissionRefused.wrap(exc) from None
@@ -241,6 +256,7 @@ class AnalysisService:
                  "commits_processed": 0, "file_errors": 0}
         try:
             self._check_cancelled(repository_id)
+            self._store.mark_running(repository_id)  # FR-30: Pending until its turn
             run = self._engine.run(repo, sampling_n, self._progress_callback(repository_id))
             commits = stored_commits(run)
             audit.update(commits_requested=len(run.analyses), commits_processed=len(commits),
@@ -301,6 +317,14 @@ class AnalysisService:
                 handle.write(json.dumps(entry, sort_keys=True) + "\n")
         except OSError:
             LOGGER.error("Audit entry could not be written: %s", path)
+
+
+def _for_field(refusal: SubmissionRefused, urls: list[object], index: int
+               ) -> SubmissionRefused:
+    """Name the comparison field whose URL was refused (TC-115); single URLs have none."""
+    if len(urls) > 1:
+        refusal.field = f"url_{index + 1}"
+    return refusal
 
 
 def stored_commits(run: ProductRun) -> list[StoredCommit]:

@@ -16,8 +16,15 @@ import { Bar, Line } from 'react-chartjs-2';
 import { useTheme } from './theme.js';
 import { formatNumber, shortSha, utcDate } from './format.js';
 
+// The Selenium acceptance tests (tests/browser) read each chart's data, point positions
+// and tooltip through this reference on its canvas; it changes nothing on screen.
+const automationHook = {
+  id: 'tdeaAutomationHook',
+  afterInit: (chart) => { chart.canvas.tdeaChart = chart; },
+};
+
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Title,
-  Tooltip, Legend, Filler, annotationPlugin, zoomPlugin);
+  Tooltip, Legend, Filler, annotationPlugin, zoomPlugin, automationHook);
 
 const COMMIT_AXIS = 'Commit sequence (1 = oldest analysed commit)';
 export const SPIKE = 'Debt Spike';

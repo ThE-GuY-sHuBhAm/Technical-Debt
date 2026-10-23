@@ -113,9 +113,12 @@ This is work in progress on the `product-implementation` branch, which carries t
 product only. The product is implemented and passes the automated tests on fixture
 repositories; none of that is acceptance evidence on its own. Scoring rules that the SRS leaves open
 (OI-01 to OI-06) follow the SRS Appendix B proposals and are marked as provisional in
-the code. The browser (Selenium) acceptance cases in the test workbook are **not
-executed**. Taking Selenium automation out of scope is proposed as change request CR-01,
-which is pending approval; until it is approved those cases remain in scope and open.
+the code. Most browser (Selenium) cases of the test workbook are automated in
+`tests/browser` and run in the CI job "browser (Selenium, headless Chrome)". That is
+developer evidence: the workbook's result columns are unchanged, and TC-010, TC-011 and
+TC-013 are not executed (`docs/verification/workbook-browser-cases.md`). Change request
+CR-01, which would take Selenium automation out of scope, is pending approval; until a
+decision those cases remain in scope.
 
 The FR-03 GitHub check is tested against mocked answers everywhere except the CI job
 "live GitHub API (FR-03)", which runs `tests/product/test_github_live.py` against the
@@ -123,4 +126,11 @@ real api.github.com. To run those tests yourself on a machine that can reach Git
 
 ```bash
 TDEA_LIVE_GITHUB=1 python -m pytest tests/product/test_github_live.py -v
+```
+
+The browser cases need Chrome and a matching ChromeDriver (Selenium Manager finds them,
+or set `TDEA_CHROME_BINARY` and `TDEA_CHROMEDRIVER`):
+
+```bash
+TDEA_BROWSER_TESTS=1 python -m pytest tests/browser -v
 ```

@@ -2,7 +2,8 @@
 
 Analyses
   POST /api/analyses              {url, token?, sampling_n?, refresh?}: start one analysis,
-                                  202, or return the cached one, 200 (FR-22)
+                                  202 with its repository_id only, or return the cached
+                                  one with its overview, 200 (FR-22)
   POST /api/comparisons           {url_1, url_2, token?, sampling_n?}: analyse two in
                                   sequence for the comparison view (FR-44)
 Repositories and results (all read from tdea.db; nothing is recomputed, FR-42)
@@ -75,9 +76,11 @@ def _token(data: dict) -> str | None:
 
 
 def _refused(error: SubmissionRefused) -> ApiError:
-    """Return the HTTP error for a refused submission."""
-    return ApiError(error.error_type, error.cause, error.action,
-                    STATUS_BY_KIND.get(error.kind, 422))
+    """Return the HTTP error for a refused submission, naming its field if it has one."""
+    failure = ApiError(error.error_type, error.cause, error.action,
+                       STATUS_BY_KIND.get(error.kind, 422))
+    failure.field = error.field
+    return failure
 
 
 def _results(call, *args):
@@ -106,9 +109,13 @@ def start_analysis():
                                        data.get("sampling_n", 2), bool(data.get("refresh")))
     except SubmissionRefused as exc:
         raise _refused(exc) from None
-    body = {"repository_id": submission.repository_id, "cached": submission.cached,
+    if not submission.cached:
+        # FR-17, TC-052: answer at once. The analysis thread is already running, so this
+        # answer reads nothing more; the progress view asks for the overview next.
+        return jsonify({"repository_id": submission.repository_id, "cached": False}), 202
+    body = {"repository_id": submission.repository_id, "cached": True,
             **_overview(submission.repository_id)}
-    return jsonify(body), 200 if submission.cached else 202
+    return jsonify(body), 200
 
 
 @api.post("/comparisons")
