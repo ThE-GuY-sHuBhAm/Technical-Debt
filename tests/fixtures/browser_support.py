@@ -20,6 +20,7 @@ from email.message import Message
 from pathlib import Path
 from typing import Any
 
+from product_support import CountingSources
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
@@ -116,20 +117,6 @@ class FakeGitHub:
 def _http_error(address: str, status: int) -> urllib.error.HTTPError:
     """Return the HTTPError urllib raises for ``status``."""
     return urllib.error.HTTPError(address, status, "error", Message(), io.BytesIO(b"{}"))
-
-
-class CountingSources(dict):
-    """The local fixture behind each repository key; records every clone (TC-004, TC-116)."""
-
-    def __init__(self, sources: dict[str, Path]) -> None:
-        """Serve ``sources``."""
-        super().__init__(sources)
-        self.clones: list[str] = []
-
-    def __getitem__(self, key: str) -> Path:
-        """Record the clone, then return the fixture path."""
-        self.clones.append(key)
-        return super().__getitem__(key)
 
 
 @dataclass

@@ -118,7 +118,10 @@ the code. Most browser (Selenium) cases of the test workbook are automated in
 developer evidence: the workbook's result columns are unchanged, and TC-010, TC-011 and
 TC-013 are not executed (`docs/verification/workbook-browser-cases.md`). Change request
 CR-01, which would take Selenium automation out of scope, is pending approval; until a
-decision those cases remain in scope.
+decision those cases remain in scope. The workbook's database, API and export cases are
+automated in `tests/product/test_workbook_backend_cases.py`
+(`docs/verification/workbook-backend-cases.md`); open points they found are listed in
+`docs/verification/open-decisions.md`.
 
 The FR-03 GitHub check is tested against mocked answers everywhere except the CI job
 "live GitHub API (FR-03)", which runs `tests/product/test_github_live.py` against the

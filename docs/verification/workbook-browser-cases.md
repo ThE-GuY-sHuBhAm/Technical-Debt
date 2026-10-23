@@ -102,7 +102,7 @@ error message and the page's text. Re-run alone, it passed.
 | --- | --- |
 | TC-010, TC-011 | FX-PRIV and FX-EMPTY must be real GitHub repositories and do not exist |
 | TC-013 | Needs a real Personal Access Token and the real GitHub API |
-| TC-103 to TC-105, TC-107 to TC-110, TC-114, TC-120 | File content and database checks; next increment, without the browser |
+| TC-103 to TC-105, TC-107 to TC-110, TC-114, TC-120 | File content and database checks: automated without the browser (`workbook-backend-cases.md`) |
 
 ## Product changes made because of these cases
 
