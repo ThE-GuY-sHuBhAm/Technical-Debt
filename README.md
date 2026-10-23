@@ -8,7 +8,9 @@ Python repository. It has two parts in one installation:
   Debt Score per commit and shows the results in a browser dashboard, with CSV and PDF
   exports and a two-repository comparison;
 * a **headless research engine** (FR-48 to FR-62) for the RG1 and RG10 studies,
-  operated with `tdea research`.
+  operated with `tdea research`. This branch carries the research engine as it is on
+  `main`; the RG10 run unit, the FR-61 counts and the FR-62 export are not part of it
+  (they are under review in PR #1).
 
 TDEA reads repository code only as text (radon) or through an isolated Pylint process.
 It never imports or runs the code it analyses, and the research engine never executes
@@ -81,7 +83,6 @@ body `{"error": {"type", "cause", "action"}}`.
 tdea research validate RUN_FILE    # check a run file without side effects
 tdea research run RUN_FILE         # start or resume a run
 tdea research status RUN_FILE      # list runs and their units
-tdea research export --store STORE --out DIR [--format csv|json|jsonl] RUN_ID...  # FR-62
 ```
 
 Run files, exit codes and stores are specified in the SRS (section 4.5) and the Spec
@@ -108,9 +109,18 @@ npm run build    # writes tdea/api/dashboard; commit the result
 
 ## Status (23 October 2026)
 
-This is work in progress on the `sprint-implementation` branch. The product and the
-research engine are implemented and pass the automated tests on fixture repositories;
-none of that is acceptance evidence on its own. Scoring rules that the SRS leaves open
+This is work in progress on the `product-implementation` branch, which carries the web
+product only. The product is implemented and passes the automated tests on fixture
+repositories; none of that is acceptance evidence on its own. Scoring rules that the SRS leaves open
 (OI-01 to OI-06) follow the SRS Appendix B proposals and are marked as provisional in
-the code. Browser automation (Selenium) is out of scope; the browser acceptance cases
-in the test workbook are not executed.
+the code. The browser (Selenium) acceptance cases in the test workbook are **not
+executed**. Taking Selenium automation out of scope is proposed as change request CR-01,
+which is pending approval; until it is approved those cases remain in scope and open.
+
+The FR-03 GitHub check is tested against mocked answers everywhere except the CI job
+"live GitHub API (FR-03)", which runs `tests/product/test_github_live.py` against the
+real api.github.com. To run those tests yourself on a machine that can reach GitHub:
+
+```bash
+TDEA_LIVE_GITHUB=1 python -m pytest tests/product/test_github_live.py -v
+```
