@@ -11,6 +11,8 @@
 # dashboard-guard  Section 6: research commits change nothing under dashboard/.
 # live-github      FR-03/FR-04 against the real api.github.com (tests/product/
 #                  test_github_live.py); elsewhere those tests are skipped, not passed.
+#                  It also runs TC-142: a full real analysis under strace, whose every
+#                  connection must go to GitHub's published addresses.
 # tc145            TC-145 / NFR-23: every tests cell writes the MD5 of FX-M's CSV export
 #                  (from the TC-128 test); this job checks that all of them are equal.
 # browser          The workbook's browser cases (tests/browser) in headless Chrome with
@@ -153,10 +155,13 @@ jobs:
           cache-dependency-path: pyproject.toml
       - name: Install tdea with the dev extra
         run: python -m pip install -e ".[dev]"
-      - name: Real GET /repos/{owner}/{repo}, no token
+      - name: strace for TC-142
+        run: command -v strace || (sudo apt-get update && sudo apt-get install -y strace)
+      - name: Real GET /repos/{owner}/{repo}, no token; TC-142 full analysis
         env:
           TDEA_LIVE_GITHUB: "1"
-        run: python -m pytest tests/product/test_github_live.py -v -rs
+          TDEA_TC142: "1"
+        run: python -m pytest tests/product/test_github_live.py -v -rs -s
 
   browser:
     name: browser (Selenium, headless Chrome)
