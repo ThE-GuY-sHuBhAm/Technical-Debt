@@ -1,4 +1,4 @@
-"""FR-06 cloning, FR-07 product history and FR-10 clean-up of one repository.
+"""FR-06 cloning, FR-07 product history, FR-09 checkout and FR-10 clean-up of a repository.
 
 A LocalRepository owns one clone in a fresh system-managed temporary directory. It is
 used as a context manager, so the clone is deleted when the work finishes and also when
@@ -9,6 +9,9 @@ GitHub repositories are cloned from their HTTPS address, built from the parsed o
 repository (execution plan, Task 3 decision 5), with no token (FR-04 uses the token for
 API requests only) and with git's credential prompts off, so a failure cannot hang. A
 local path can be cloned too; the tests use this.
+
+checkout() moves the clone's working tree to one commit, detached and forced, without
+touching branches or history (FR-09); python_files() lists the .py blobs it holds.
 
 The address cloned from and the clone time (UTC, taken when the clone completes) are
 kept for the research history record (FR-49); the clock is replaceable for tests.
@@ -117,6 +120,39 @@ class LocalRepository:
                 "Git could not read the cloned repository's history.",
                 "Try the analysis again; if it fails again, the repository may be damaged.",
             ) from exc
+
+    def checkout(self, sha: str) -> None:
+        """Check the working tree out at ``sha``, detached, with no history change (FR-09).
+
+        The checkout is forced, so a previous checkout's files never mix in; only the
+        clone's working tree and HEAD change, never a branch or the object database.
+        """
+        try:
+            self.repo.git.checkout("--force", "--detach", sha)
+        except GitCommandError as exc:
+            raise TdeaError(
+                ErrorCode.HISTORY_FAILED,
+                "Commit checkout failed",
+                f"Git could not check out commit {sha[:12]} in the clone.",
+                "Try the analysis again; if it fails again, the repository may be damaged.",
+            ) from exc
+
+    def python_files(self) -> list[tuple[str, str]]:
+        """Return (path, blob SHA) of every regular .py file at the checked-out commit.
+
+        Paths are POSIX and relative to the clone, sorted. Symbolic links and submodules
+        are left out (CON-01: only Python source files are analysed).
+        """
+        output = self.repo.git.ls_tree("-r", "-z", "--full-tree", "HEAD")
+        files = []
+        for entry in output.split("\0"):
+            if not entry:
+                continue
+            meta, path = entry.split("\t", 1)
+            mode, kind, blob = meta.split()
+            if kind == "blob" and mode in ("100644", "100755") and path.endswith(".py"):
+                files.append((path, blob))
+        return sorted(files)
 
     def cleanup(self) -> None:
         """Delete the clone and everything in it; safe to call more than once (FR-10)."""
