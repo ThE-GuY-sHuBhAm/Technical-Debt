@@ -10,9 +10,10 @@ else is real: git, the research profile, the lint cache, research.db and the loc
   the clone the killed process left (FR-10).
 * In-process failures inside and after a unit's transaction show the rollback and the
   resume, and the duplicate guard refuses to store a unit twice.
-* Failures without an agreed exit code (a binary diff on a tracked file, a failed
-  accessibility check, a clone failure) stop the run, keep earlier units and are printed
-  in three parts with the undecided note (decision 3); SRS v2.3's exit 4 stays BLOCKED.
+* A clone failure stops the run with exit 4 (FR-48, Freeze revision 116), keeping
+  earlier units, and running again resumes (RE-01 step 7). Failures without an agreed
+  exit code (a binary diff on a tracked file, a failed accessibility check) stop the run,
+  keep earlier units and are printed in three parts with the undecided note (decision 3).
 """
 
 from __future__ import annotations
@@ -330,30 +331,35 @@ def test_a_failed_accessibility_check_stops_with_an_undecided_code(
     assert rows(workspace.store, "SELECT status FROM run") == [("running",)]
 
 
-def test_a_clone_failure_names_cl15_and_does_not_claim_a_code(
+def test_a_clone_failure_ends_with_exit_4_and_running_again_resumes(
     built: Built, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """CL-15 open: a clone failure is reported as such; status 1 is only a placeholder."""
+    """FR-48 (Freeze rev. 116), RE-01 step 7: a unit stopped on a clone error exits 4.
+
+    FX-PAIRS cannot be cloned, so its units stop after FX-RG1's two have committed; once
+    the clone source is back, running the same run file again resumes: FX-RG1's units are
+    kept unchanged and none of their files is linted again, and the run completes (exit 0).
+    """
     workspace = built.workspace(tmp_path / "ws")
-    workspace.access.sources["tdea-fixtures/fx-rg1"] = tmp_path / "no-such-repository"
-    assert main(["research", "run", str(workspace.run_file(four_units()))],
-                service=workspace.service()) == cli.EXIT_UNDECIDED
+    workspace.access.sources["tdea-fixtures/fx-pairs"] = tmp_path / "no-such-repository"
+    run_file = workspace.run_file(four_units())
+    assert main(["research", "run", str(run_file)], service=workspace.service()) == 4
     err = capsys.readouterr().err
-    assert err.startswith("Error: Clone failed\nCause: https://github.com/tdea-fixtures/fx-rg1")
-    assert "Exit code unresolved for this clone failure (CL-15 open)" in err
-    assert cli.PLACEHOLDER_NOTE in err and not workspace.clone_entries()
+    assert err.startswith("Error: Clone failed\nCause: https://github.com/tdea-fixtures/fx-pairs")
+    assert cli.INCOMPLETE_NOTE in err and cli.PLACEHOLDER_NOTE not in err
+    assert "Exit code unresolved" not in err and not workspace.clone_entries()
+    assert rows(workspace.store, "SELECT count(*), min(status) FROM unit") == [(2, "complete")]
+    assert rows(workspace.store, "SELECT status FROM run") == [("running",)]
+    before = unit_1_records(workspace.store)
 
-
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="BLOCKED: SRS v2.3 gives exit 4 for a unit stopped on a clone, "
-                          "network or disk error; the Freeze has no such code (Day 6 "
-                          "decision 3: undecided)")
-def test_srs_exit_4_for_a_clone_failure(built: Built, tmp_path: Path) -> None:
-    """SRS v2.3 4.5.1: a clone failure ends with exit 4. Not implemented while undecided."""
-    workspace = built.workspace(tmp_path / "ws")
-    workspace.access.sources["tdea-fixtures/fx-rg1"] = tmp_path / "no-such-repository"
-    assert main(["research", "run", str(workspace.run_file(four_units()))],
-                service=workspace.service()) == 4
+    workspace.access.sources["tdea-fixtures/fx-pairs"] = built.fx_pairs
+    profile = CountingProfile()
+    assert main(["research", "run", str(run_file)],
+                service=workspace.service(profile=profile)) == EXIT_OK
+    assert unit_1_records(workspace.store) == before
+    assert not unit_1_blobs(workspace.store) & set(profile.blobs)
+    assert rows(workspace.store, "SELECT count(*), min(status) FROM unit") == [(4, "complete")]
+    assert rows(workspace.store, "SELECT status FROM run") == [("complete",)]
 
 
 class RefusingClassifier(SyntheticClassifier):

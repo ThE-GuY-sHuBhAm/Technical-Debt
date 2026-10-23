@@ -30,9 +30,11 @@ is cloned, locked or written before the checks that precede it pass:
    the lock holder uses (FR-10), open the lint cache and let ResearchJob start or resume
    the run, with its clones in the run clone folder.
 
-The store path is read relative to the run file's folder (Day 6 reading), as is a
-relative key_file; ``~`` is expanded. The optional PAT is passed to the accessibility
-check only: it is never stored, logged or put into an error message (FR-04, NFR-19).
+The store path is read relative to the run file's folder (Day 6 reading), as are a
+relative key_file and lint_cache; ``~`` is expanded. Without lint_cache the run uses
+the service's lint cache (default ~/.tdea/lintcache.db, FR-52). The optional PAT is
+passed to the accessibility check only: it is never stored, logged or put into an error
+message (FR-04, NFR-19).
 
 status() lists every run in the run file's research store with its units, read-only:
 it never creates the store, a lock, the key file or the lint cache, and it does not
@@ -43,11 +45,11 @@ Failures reach the command line as RunFileInvalid (exit 1) or ResearchRunError, 
 carries the three FR-05 parts and the exit code when one is agreed: 1 for SHAs that
 cannot be selected and for an RG10 bundle schema error (BundleInvalid, FR-58; Day 9
 decision D10 maps it here, for when RG10 runs are built), 3 for the refusals above and
-for a changed history (FR-49). Every
+for a changed history (FR-49), and 4 for a unit stopped on a clone, network, disk or
+file failure (FR-48, Freeze revision 116; running again resumes; Stage 3, E-2). Every
 other failure has exit_code None and names its category and the open item blocking its
-code (Day 6 decision 3): CL-15 for a clone, network, disk or file failure (SRS v2.3 exit 4;
-the Specification Freeze has codes 0 to 3 only), CL-19 for a failed accessibility check at
-run time, and none for an unusable key file, a store or lint cache of another kind, a
+code (Day 6 decision 3): CL-19 for a failed accessibility check at run time, and none
+for an unusable key file, a store or lint cache of another kind, a
 history read failure, tracking stopped on a binary diff or, from Task 7 Day 8, a stored
 run whose completed units lack required records (StoreIncomplete, decision R4.3). None of
 them is invalid input.
@@ -79,7 +81,7 @@ from tdea.aggregator.research_store import ResearchStore
 from tdea.aggregator.rg10_job import Rg10Context, Rg10Job, Rg10Result
 from tdea.aggregator.run_file import Rg10RunFile, RunFile, read_run_file
 from tdea.aggregator.run_identity import canonical_text, run_identifier
-from tdea.analyzer.research.engine import (CL15, HistoryChanged, ResearchEngine,
+from tdea.analyzer.research.engine import (EXIT_INCOMPLETE, HistoryChanged, ResearchEngine,
                                            RulesIncomplete, SelectionInvalid, UnitStopped)
 from tdea.analyzer.research.profile import EnvironmentFacts, EnvironmentRefused
 from tdea.analyzer.research.rg10.bundle import BundleInvalid, BundleLoader, bundle_content_hash
@@ -100,7 +102,7 @@ class ResearchRunError(Exception):
     """A run or status refused or stopped: three FR-05 parts and the exit code, if agreed.
 
     When no exit code is agreed (``exit_code`` None), ``category`` names the kind of
-    failure and ``open_item`` the open decision blocking its code (CL-15, CL-19), or None
+    failure and ``open_item`` the open decision blocking its code (CL-19), or None
     when no source defines a code for it.
     """
 
@@ -216,7 +218,7 @@ class ResearchService:
                 "Run stopped", "A file or database operation failed, for example because "
                 "the disk is full or a folder cannot be written.",
                 "Fix the problem and run the same run file again; completed units are "
-                "kept and the run resumes.", None, "disk or file failure", CL15) from None
+                "kept and the run resumes.", EXIT_INCOMPLETE, "disk or file failure") from None
 
     def status(self, path: Path | str) -> StoreStatus:
         """List every run in the run file's research store, without writing anything."""
@@ -276,7 +278,7 @@ class ResearchService:
                 "Run stopped", "A file or database operation failed, for example because "
                 "the disk is full or a folder cannot be written.",
                 "Fix the problem and run the same run file again; nothing of the bundle was "
-                "stored.", None, "disk or file failure", CL15) from None
+                "stored.", EXIT_INCOMPLETE, "disk or file failure") from None
 
     def export(self, store_path: Path | str, run_ids: list[str]) -> ExportData:
         """Return the records of ``run_ids`` in the research store at ``store_path`` (FR-62).
@@ -333,7 +335,8 @@ class ResearchService:
             check_store(store, run_id)  # before the clone folder or the lint cache is touched
             clones = self._clone_folder()
             self._engine.discard_stale_clones(clones)
-            with _open(LintCache, self._paths.lint_cache, "lint cache") as cache:
+            with _open(LintCache, self._lint_cache_path(path, run_file),
+                       "lint cache") as cache:
                 context = RunContext(run_id, run_file, canonical_text(run_file), __version__,
                                      key, fingerprint, metadata, lint_cache=cache,
                                      token=token, clone_root=clones)
@@ -345,6 +348,11 @@ class ResearchService:
         """Return the key file: the run file's key_file beside it, else the default."""
         return (_beside(path, run_file.key_file) if run_file.key_file is not None
                 else self._paths.key_file)
+
+    def _lint_cache_path(self, path: Path, run_file: RunFile) -> Path:
+        """Return lintcache.db: the run file's lint_cache beside it, else the default."""
+        return (_beside(path, run_file.lint_cache) if run_file.lint_cache is not None
+                else self._paths.lint_cache)
 
     def _clone_folder(self) -> Path:
         """Return the run clone folder: ``clones`` in the lock's per-user folder."""

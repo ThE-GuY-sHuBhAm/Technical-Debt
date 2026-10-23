@@ -152,7 +152,7 @@ def test_required_keys_must_be_present(tmp_path: Path, key: str) -> None:
 
 
 def test_optional_keys_may_be_left_out(tmp_path: Path) -> None:
-    """key_file, cutoff, head and a window's commits are optional."""
+    """key_file, lint_cache, cutoff, head and a window's commits are optional."""
     text = (VALID.replace("key_file: ~/.tdea/research.key\n", "")
             .replace("cutoff: null\n", "").replace("    head: null\n", "")
             .replace(f", commits: [{SHA_A}, {SHA_B}]", ""))
@@ -232,20 +232,18 @@ def test_a_token_anywhere_rejects_the_file_without_echoing_it(
         assert canary_token not in repr(reported)
 
 
-def test_lint_cache_is_refused_as_unresolved_between_srs_and_freeze(tmp_path: Path) -> None:
-    """lint_cache is in SRS v2.3 but not the Freeze; it stays blocked (Task 7 decision 3)."""
-    reported = problems(tmp_path, VALID + "lint_cache: ~/.tdea/lintcache.db\n")
-    assert [(problem.error_type, problem.blocked) for problem in reported] == [
-        (UNSUPPORTED, True)]
-    assert "SRS v2.3" in reported[0].cause and "Specification Freeze" in reported[0].cause
+def test_lint_cache_is_an_optional_path(tmp_path: Path) -> None:
+    """Freeze rev. 116 FR-48 schema: lint_cache is an optional path; null means the default."""
+    assert check(tmp_path, VALID).lint_cache is None
+    run = check(tmp_path, VALID + "lint_cache: ~/.tdea/lintcache.db\n")
+    assert run.lint_cache == "~/.tdea/lintcache.db"
+    assert check(tmp_path, VALID + "lint_cache: null\n").lint_cache is None
 
 
-@pytest.mark.xfail(strict=True, raises=RunFileInvalid,
-                   reason="lint_cache: SRS v2.3 lists it, the Freeze does not; precedence "
-                          "is not settled (Task 7 decision 3)")
-def test_lint_cache_is_accepted_as_srs_v23_states(tmp_path: Path) -> None:
-    """SRS 4.5.2: lint_cache is an optional key (blocked until the conflict is decided)."""
-    check(tmp_path, VALID + "lint_cache: ~/.tdea/lintcache.db\n")
+def test_a_lint_cache_of_the_wrong_shape_is_rejected(tmp_path: Path) -> None:
+    """lint_cache, like key_file, must be a file path or null."""
+    assert causes(tmp_path, VALID + "lint_cache: 5\n") == [
+        "lint_cache must be a file path or null."]
 
 
 RG10 = "kind: rg10\nstore: research.db\nbundle: bundles/rg10-01\n"
@@ -266,7 +264,8 @@ def test_an_rg10_run_file_may_name_its_smell_mapping(tmp_path: Path) -> None:
     assert run_file.smell_mapping == (("T1", ("W0702",)), ("T2", ("C0209",)))
 
 
-@pytest.mark.parametrize("extra", ["key_file: k.key\n", "seeds: {s: 1}\n", "w_months: 6\n"])
+@pytest.mark.parametrize("extra", ["key_file: k.key\n", "lint_cache: c.db\n", "seeds: {s: 1}\n",
+                                   "w_months: 6\n"])
 def test_rg1_keys_are_not_rg10_keys(tmp_path: Path, extra: str) -> None:
     """CL-05 is open, so no key beyond the frozen RG10 schema is accepted."""
     (cause,) = causes(tmp_path, RG10 + extra)

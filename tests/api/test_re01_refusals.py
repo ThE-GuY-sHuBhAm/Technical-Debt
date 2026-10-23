@@ -305,8 +305,9 @@ def test_ask_token_prompts_without_echo(monkeypatch: pytest.MonkeyPatch,
 @pytest.mark.parametrize("error, code", [
     (ResearchRunError("History changed", "c", "a", 3), 3),
     (ResearchRunError("Invalid commit list", "c", "a", 1), 1),
-    (ResearchRunError("Clone failed", "c", "a", None, "clone failure", "CL-15"),
-     cli.EXIT_UNDECIDED),
+    (ResearchRunError("Clone failed", "c", "a", 4, "clone failure"), 4),
+    (ResearchRunError("Repository not found", "c", "a", None, "failed accessibility check",
+                      "CL-19"), cli.EXIT_UNDECIDED),
 ])
 def test_exit_codes_follow_the_error(error: ResearchRunError, code: int,
                                      capsys: pytest.CaptureFixture[str]) -> None:
@@ -316,6 +317,7 @@ def test_exit_codes_follow_the_error(error: ResearchRunError, code: int,
     assert err.startswith(f"Error: {error.error_type}\nCause: c\nAction: a")
     assert ("Exit code unresolved" in err) == (cli.PLACEHOLDER_NOTE in err) \
         == (error.exit_code is None)
+    assert (cli.INCOMPLETE_NOTE in err) == (code == cli.EXIT_INCOMPLETE == 4)
 
 
 def test_an_invalid_run_file_from_run_exits_1(capsys: pytest.CaptureFixture[str]) -> None:
@@ -349,15 +351,14 @@ def test_synthetic_an_unusable_key_file_is_reported_with_an_undecided_code(
 def test_synthetic_a_store_that_cannot_be_written_stops_the_run(
     workspace: Workspace, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """SYNTHETIC — not CL-03: a disk or file failure is reported in three parts, code undecided."""
+    """SYNTHETIC — not CL-03: a disk or file failure is reported in three parts, exit 4 (FR-48)."""
     workspace.store.mkdir()  # research.db is a folder: SQLite cannot open it
     run_file = workspace.run_file(four_units())
-    assert main(["research", "run", str(run_file)], service=workspace.service()) \
-        == cli.EXIT_UNDECIDED
+    assert main(["research", "run", str(run_file)], service=workspace.service()) == 4
     err = capsys.readouterr().err
     assert err.startswith("Error: Run stopped\nCause: A file or database operation failed")
-    assert "sqlite" not in err.lower() and cli.PLACEHOLDER_NOTE in err
-    assert "Exit code unresolved for this disk or file failure (CL-15 open):" in err
+    assert "sqlite" not in err.lower() and cli.PLACEHOLDER_NOTE not in err
+    assert cli.INCOMPLETE_NOTE in err and "Exit code unresolved" not in err
     assert workspace.access.tokens == []
 
 
@@ -380,9 +381,6 @@ def test_the_run_context_never_shows_its_key_or_token(canary_token: str) -> None
 
 
 @pytest.mark.parametrize("category, open_item, expected", [
-    ("clone failure", "CL-15", "Exit code unresolved for this clone failure (CL-15 open): SRS "
-     "v2.3 gives exit 4 to a unit stopped on a clone, network or disk error, but the "
-     "Specification Freeze defines exit codes 0 to 3 only."),
     ("failed accessibility check", "CL-19", "Exit code unresolved for this failed "
      "accessibility check at run time (CL-19 open): no source defines its exit code."),
     ("history read failure", None, "Exit code unresolved for this history read failure: no "
@@ -398,15 +396,24 @@ def test_unresolved_notes_name_the_category_and_the_open_item(
 
 
 def test_the_open_items_the_command_line_names_are_the_engines() -> None:
-    """The command line's CL-15 and CL-19 notes match the engine's open-item names."""
-    assert (engine.CL15, engine.CL19) == ("CL-15", "CL-19")
+    """The command line's CL-19 note matches the engine's open-item name; CL-15 is gone."""
+    assert engine.CL19 == "CL-19" and not hasattr(engine, "CL15")
+    assert cli.EXIT_INCOMPLETE == engine.EXIT_INCOMPLETE == 4
     categories = engine._STOP_CATEGORIES  # pylint: disable=protected-access
-    assert {open_item for _category, open_item in categories.values()} == {"CL-15", "CL-19", None}
+    assert {open_item for _category, open_item in categories.values()} == {"CL-19", None}
+
+
+@pytest.mark.parametrize("code, category", [
+    (ErrorCode.CLONE_FAILED, "clone failure"),
+    (ErrorCode.NETWORK, "network failure"),
+])
+def test_clone_and_network_stops_end_with_exit_4(code: ErrorCode, category: str) -> None:
+    """FR-48 (Freeze rev. 116): a unit stopped on a clone or network error is incomplete."""
+    stop = engine.UnitStopped.wrap(FX_RG1_URL, TdeaError(code, "Type", "cause.", "action."))
+    assert (stop.category, stop.open_item, stop.exit_code) == (category, None, 4)
 
 
 @pytest.mark.parametrize("code, category, open_item", [
-    (ErrorCode.CLONE_FAILED, "clone failure", "CL-15"),
-    (ErrorCode.NETWORK, "network failure", "CL-15"),
     *[(code, "failed accessibility check", "CL-19") for code in (
         ErrorCode.NOT_FOUND, ErrorCode.NOT_ACCESSIBLE, ErrorCode.PRIVATE_REPOSITORY,
         ErrorCode.EMPTY_REPOSITORY, ErrorCode.AUTH_FAILED, ErrorCode.RATE_LIMITED,

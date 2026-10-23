@@ -17,16 +17,15 @@ Commands (SRS 4.5.1):
   (FR-62): exit 1 for an unknown run, store or unusable folder, 3 for runs of different
   kinds or key fingerprints, or a run that has not completed.
 
-Exit codes are the ones every source agrees on (Task 7 Day 6 decision 3): 0 complete or
-nothing to do; 2 an RG10 evaluation complete with exclusions (FR-59; sprint 23 Oct);
-1 invalid input (a run file that fails validation, a malformed command
-line, SHAs outside their window or absent from the history); 3 refused (the NFR-24
-environment, CL-03 incomplete (decision 1), the single-analysis lock held or unusable,
-a changed history). Every other failure has no agreed exit code. It is printed in the
-three-part form followed by a note naming its category and why its code is unresolved:
-CL-15 (SRS v2.3 gives exit 4 to "a unit stopped on a clone, network or disk error"; the
-Specification Freeze defines 0 to 3 only), CL-19 (a failed accessibility check at run time)
-or no definition at all. Until the owner decides, the process ends with status 1 as a
+Exit codes are FR-48's (Freeze revision 116): 0 complete or nothing to do; 2 an RG10
+evaluation complete with exclusions (FR-59; sprint 23 Oct); 1 invalid input (a run file
+that fails validation, a malformed command line, SHAs outside their window or absent from
+the history); 3 refused (the NFR-24 environment, CL-03 incomplete (decision 1), the
+single-analysis lock held or unusable, a changed history); 4 incomplete, a unit stopped
+on a clone, network or disk error, after which running again resumes (Stage 3, E-2; the
+line INCOMPLETE_NOTE says so). Every other failure has no agreed exit code. It is printed
+in the three-part form followed by a note naming its category and why its code is
+unresolved: CL-19 (a failed accessibility check at run time) or no definition at all. Until the owner decides, the process ends with status 1 as a
 placeholder; the note says so, and status 1 then does not mean invalid input. No code
 outside 0 to 4 is used. Every error is printed as
 error type, cause and action through ApiError (FR-05, NFR-11); the command line calls only
@@ -53,10 +52,13 @@ EXIT_OK = 0
 EXIT_INVALID_INPUT = 1  # FR-48: invalid input, including a malformed command line.
 EXIT_EXCLUSIONS = 2  # FR-48: complete with exclusions (RG10 unevaluable outputs, FR-59).
 EXIT_REFUSED = 3  # FR-48: refused.
+EXIT_INCOMPLETE = 4  # FR-48: a unit stopped on a clone, network or disk error; rerun resumes.
 EXIT_UNDECIDED = 1  # placeholder while the code is unresolved; not a claim of invalid input
 TOKEN_VARIABLE = "TDEA_GITHUB_TOKEN"
 PLACEHOLDER_NOTE = ("Exit status: 1 is a placeholder until this exit code is decided; here it "
                     "does not mean that the input is invalid.")
+INCOMPLETE_NOTE = ("Exit status: 4, the run is incomplete; run the same run file again to "
+                   "resume it.")
 
 
 class UsageError(Exception):
@@ -174,6 +176,8 @@ def main(argv: Sequence[str] | None = None,
             print(unresolved_note(error.category, error.open_item), file=sys.stderr)
             print(PLACEHOLDER_NOTE, file=sys.stderr)
             return EXIT_UNDECIDED
+        if error.exit_code == EXIT_INCOMPLETE:
+            print(INCOMPLETE_NOTE, file=sys.stderr)
         return error.exit_code
     research.print_help()
     return EXIT_OK
@@ -182,10 +186,6 @@ def main(argv: Sequence[str] | None = None,
 def unresolved_note(category: str | None, open_item: str | None) -> str:
     """Return the line naming a failure's category and why its exit code is unresolved."""
     kind = category or "failure"
-    if open_item == "CL-15":
-        return (f"Exit code unresolved for this {kind} (CL-15 open): SRS v2.3 gives exit 4 to "
-                "a unit stopped on a clone, network or disk error, but the Specification "
-                "Freeze defines exit codes 0 to 3 only.")
     if open_item == "CL-19":
         return (f"Exit code unresolved for this {kind} at run time (CL-19 open): no source "
                 "defines its exit code.")

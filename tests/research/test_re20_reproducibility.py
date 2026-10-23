@@ -97,6 +97,28 @@ def test_rg1_exports_are_identical_with_the_cache_off_and_on(
     assert len(hashes[0]) == 22  # 21 entities and data_dictionary.csv
 
 
+def test_a_run_file_lint_cache_is_the_cache_the_run_uses(
+        built: Built, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """FR-48 schema, FR-52 (Freeze rev. 116): lint_cache in the run file sets lintcache.db.
+
+    The path is read beside the run file. A warm cache placed there answers every lint,
+    and the service's default lint cache is never created.
+    """
+    workspace = built.workspace(tmp_path / "ws", warm=False)
+    own = workspace.root / "own" / "lintcache.db"
+    own.parent.mkdir()
+    shutil.copyfile(built.warm_cache, own)
+    text = run_file_text([(FX_RG1_URL, FX_RG1_WINDOWS, None),
+                          (FX_PAIRS_URL, FX_PAIRS_WINDOWS, None)])
+    run_file = workspace.run_file(text + "lint_cache: own/lintcache.db\n")
+    profile = CountingProfile()
+    assert main(["research", "run", str(run_file)],
+                service=workspace.service(profile=profile)) == EXIT_OK
+    assert profile.requests and not profile.fresh
+    assert cache_report(capsys.readouterr().out) == (len(profile.requests), 0)
+    assert not workspace.paths().lint_cache.exists()
+
+
 def test_two_rg10_evaluations_export_identically(fx_rg10_v2: FxRg10, tmp_path: Path) -> None:
     """Step 5: FX-RG10 v2 evaluated twice with the same key; both exports identical."""
     workspaces = [Workspace(tmp_path / name, LocalAccess({})) for name in ("one", "two")]

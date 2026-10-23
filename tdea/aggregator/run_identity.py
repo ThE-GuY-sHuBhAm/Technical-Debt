@@ -1,12 +1,11 @@
 """The canonical run file and the run identifier (FR-48, FR-52, NFR-24).
 
 Run identifier (Freeze FR-48 and glossary): the first 12 hex characters of SHA-256 over
-the canonical run file without store and key_file, the profile hash, the TDEA version
-and the key fingerprint; an RG10 run adds the bundle content hash under the key
-"bundle_content_hash" (sprint 23 Oct), and its canonical run file is {"kind",
+the canonical run file without store, key_file, lint_cache and bundle, the profile hash,
+the TDEA version and the key fingerprint; an RG10 run adds the bundle content hash under
+the key "bundle_content_hash" (sprint 23 Oct), and its canonical run file is {"kind",
 "smell_mapping"}, the mapping as sorted type -> rule list. The same inputs resume the
-same run. SRS v2.3 also leaves out lint_cache and bundle; both are refused or absent in
-an RG1 run file today, so the two texts give the same identifier.
+same run, wherever the store, key file and lint cache are.
 
 How the parts are combined (Task 7 Day 6 decision 4): SHA-256 over the canonical JSON of
 the object {"canonical_run_file", "key_fingerprint", "profile_hash", "tdea_version"}.
@@ -17,8 +16,8 @@ identifier adds no equivalence of its own; two run files share it only when vali
 gives them equal values. Exactly:
 
 * Object: {"kind", "seeds", "w_months", "tau", "cutoff", "repositories"}; each repository
-  {"url", "head", "windows"}; each window {"start", "end", "commits"}. store and key_file
-  are left out (FR-48). Keys are sorted; lists keep the run file's order.
+  {"url", "head", "windows"}; each window {"start", "end", "commits"}. store, key_file
+  and lint_cache are left out (FR-48). Keys are sorted; lists keep the run file's order.
 * Values: url exactly as written; head and a window's SHAs as written (validation admits
   only 40-character lowercase hex) or null; commits a list or null; seeds a mapping of
   names to integers; w_months an integer; tau a float (Python's shortest repr: 0.7);
@@ -66,7 +65,7 @@ def instant_text(moment: datetime | None) -> str | None:
 
 
 def canonical_run_file(run_file: RunFile | Rg10RunFile) -> dict[str, object]:
-    """Return the run file without store and key_file (and bundle), as canonical data."""
+    """Return the run file without store, key_file, lint_cache and bundle, as data."""
     if isinstance(run_file, Rg10RunFile):
         return {"kind": run_file.kind,
                 "smell_mapping": {smell: list(rules) for smell, rules in run_file.smell_mapping}}

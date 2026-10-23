@@ -16,11 +16,13 @@ git_handler (NFR-14). It offers:
   through introductions, tracking, disappearance modes and base rates.
 
 Failures carry the three FR-05 parts and, where an agreed exit code exists, that code:
-RulesIncomplete and HistoryChanged 3, SelectionInvalid 1. UnitStopped has none; it names
-its failure category and the open item that blocks the code: CL-15 for a clone or network
-failure (SRS v2.3 exit 4, absent from the Specification Freeze), CL-19 for a failed
-accessibility check at run time, and none for failures no source covers (history read
-failure, tracking stopped on a binary diff). The categorisation is Day 6's reading. From
+RulesIncomplete and HistoryChanged 3, SelectionInvalid 1. A UnitStopped for a clone or
+network failure has exit 4 (FR-48, Freeze revision 116: "incomplete: a unit stopped on a
+clone, network or disk error; running again resumes"; Stage 3, E-2). Any other
+UnitStopped has none; it names its failure category and the open item that blocks the
+code: CL-19 for a failed accessibility check at run time, and none for failures no source
+covers (history read failure, tracking stopped on a binary diff). The categorisation is
+Day 6's reading. From
 Day 7 the fail-closed stops of FR-56 (fail_closed.py: CL-17's module-level case, an
 unlocatable scope, unknown provenance, an unreadable version, an inconsistent file change)
 are UnitStopped too, with their category and no open item for the code: they use Day 6's
@@ -115,13 +117,14 @@ class RulesIncomplete(Exception):
         super().__init__(f"{self.error_type}: {self.cause} {self.action}")
 
 
-CL15 = "CL-15"  # SRS v2.3 exit 4 for a unit stopped on a clone, network or disk error;
-#                 the Specification Freeze defines exit codes 0 to 3 only
+EXIT_INCOMPLETE = 4  # FR-48: a unit stopped on a clone, network or disk error; rerun resumes
 CL19 = "CL-19"  # exit code for a failed accessibility check at run time: not defined
 ACCESSIBILITY = "failed accessibility check"
+_INCOMPLETE_CATEGORIES = {  # failure category of the stops that end with exit 4
+    ErrorCode.CLONE_FAILED: "clone failure",
+    ErrorCode.NETWORK: "network failure",
+}
 _STOP_CATEGORIES = {  # failure category and the open item that blocks its exit code
-    ErrorCode.CLONE_FAILED: ("clone failure", CL15),
-    ErrorCode.NETWORK: ("network failure", CL15),
     ErrorCode.NOT_FOUND: (ACCESSIBILITY, CL19),
     ErrorCode.NOT_ACCESSIBLE: (ACCESSIBILITY, CL19),
     ErrorCode.PRIVATE_REPOSITORY: (ACCESSIBILITY, CL19),
@@ -134,22 +137,22 @@ _STOP_CATEGORIES = {  # failure category and the open item that blocks its exit 
 
 
 class UnitStopped(Exception):
-    """A repository or unit stopped on a failure whose exit code is unresolved.
+    """A repository or unit stopped on a failure: exit 4, or an unresolved exit code.
 
-    ``category`` names the kind of failure; ``open_item`` is the open decision that blocks
-    its exit code (CL-15 or CL-19), or None when no source defines one at all.
+    ``category`` names the kind of failure. ``exit_code`` is EXIT_INCOMPLETE for a clone or
+    network failure and None otherwise; then ``open_item`` is the open decision that blocks
+    the code (CL-19), or None when no source defines one at all.
     """
 
-    exit_code = None
-
     def __init__(self, error_type: str, cause: str, action: str, category: str,
-                 open_item: str | None) -> None:
-        """Keep the three parts, the failure category and the open item."""
+                 open_item: str | None, exit_code: int | None = None) -> None:
+        """Keep the three parts, the failure category, the open item and the exit code."""
         self.error_type = error_type
         self.cause = cause
         self.action = action
         self.category = category
         self.open_item = open_item
+        self.exit_code = exit_code
         super().__init__(f"{error_type}: {cause} {action}")
 
     @classmethod
@@ -160,6 +163,9 @@ class UnitStopped(Exception):
             category, open_item = error.category, None
         elif isinstance(error, TrackingStopped):
             category, open_item = "tracking stop on a binary diff", None
+        elif error.code in _INCOMPLETE_CATEGORIES:
+            return cls(error.error_type, f"{url}: {error.cause}", error.action,
+                       _INCOMPLETE_CATEGORIES[error.code], None, EXIT_INCOMPLETE)
         else:
             category, open_item = _STOP_CATEGORIES.get(error.code,
                                                        ("repository failure", None))

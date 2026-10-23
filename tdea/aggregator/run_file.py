@@ -12,18 +12,21 @@ message repeats a token or raw exception text.
 Where the frozen texts are silent, these readings apply (Task 7 report):
 
 * A key the frozen schema shows is required unless the schema marks it optional or gives
-  its default: key_file, cutoff, head and a window's commits are optional (null means
-  "not given"); kind, store, w_months, repositories, url, windows, start and end are
+  its default: key_file, lint_cache, cutoff, head and a window's commits are optional
+  (null means "not given"); kind, store, w_months, repositories, url, windows, start and end are
   required, and a required key set to null counts as missing.
 * A missing tau or seeds is refused as not yet settled (blocked), not guessed: the schema
   shows both without an optional note, but FR-56 and the glossary give tau a default of
   0.7, and FR-48 only records seeds.
-* ``lint_cache`` is in SRS v2.3's schema but not in the Freeze's, and which governs is not
-  settled (Task 7 decision 3), so the key is refused as not yet supported (blocked).
+* ``lint_cache`` (Freeze revision 116, FR-48 schema and FR-52): an optional path to
+  lintcache.db, default ~/.tdea/lintcache.db, not part of the run identifier. Like
+  key_file it is read relative to the run file's folder with ``~`` expanded. An earlier
+  copy of the Freeze lacked the key and it was refused as unresolved; revision 116 has it
+  (Stage 3, E-2), so nothing about it remains open.
 * RG10 run files (sprint 23 Oct): the keys are the ones the frozen schema shows, kind,
   store and bundle required and smell_mapping optional (default T1 = W0718 + W0702,
-  T2 = C0209). CL-05 is open, so key_file, lint_cache and seeds are refused as unknown
-  keys (no key is added without an FCN); RG10 runs use the default key file for the key
+  T2 = C0209). The frozen RG10 schema has no key_file, lint_cache or seeds (CL-05), so
+  they are refused as unknown keys; RG10 runs use the default key file for the key
   fingerprint in their identifier. CL-06 is open, so validate checks the run file only;
   the bundle itself is checked when the run starts (FR-58, exit 1).
 * A token is a GitHub access token in a prefixed form (ghp_, gho_, ghu_, ghs_, ghr_ or
@@ -64,15 +67,11 @@ UNSUPPORTED = "Not yet supported"
 RG1_REQUIRED = ("kind", "store", "seeds", "w_months", "tau", "repositories")
 RG10_REQUIRED = ("kind", "store", "bundle")
 RG10_OPTIONAL = ("smell_mapping",)
-RG1_OPTIONAL = ("key_file", "cutoff")
+RG1_OPTIONAL = ("key_file", "lint_cache", "cutoff")
 REPOSITORY_REQUIRED = ("url", "windows")
 REPOSITORY_OPTIONAL = ("head",)
 WINDOW_REQUIRED = ("start", "end")
 WINDOW_OPTIONAL = ("commits",)
-UNRESOLVED_KEYS = {
-    "lint_cache": ("The key 'lint_cache' is in SRS v2.3's run-file schema but not in the "
-                   "Specification Freeze's, and which of the two governs is not yet decided."),
-}
 TAU_VALUES = (0.5, 0.6, 0.7, 0.8)
 
 UNSETTLED_WHEN_MISSING = {
@@ -151,6 +150,7 @@ class RunFile:
     kind: str
     store: str
     key_file: str | None
+    lint_cache: str | None
     seeds: Mapping[str, int]
     w_months: int
     tau: float
@@ -324,6 +324,7 @@ class _Validator:
         values = {
             "store": self._text(document.get("store"), "store", "store: research.db"),
             "key_file": self._optional_text(document.get("key_file"), "key_file"),
+            "lint_cache": self._optional_text(document.get("lint_cache"), "lint_cache"),
             "seeds": self._seeds(document.get("seeds")),
             "w_months": self._w_months(document.get("w_months")),
             "tau": self._tau(document.get("tau")),
@@ -356,14 +357,10 @@ class _Validator:
 
     def _keys(self, mapping: dict, required: tuple[str, ...], optional: tuple[str, ...],
               where: str, missing: Callable[[str, str], None]) -> None:
-        """Report unknown, not-yet-supported and missing keys of one mapping."""
+        """Report unknown and missing keys of one mapping."""
         allowed = required + optional
         for key in mapping:
-            if key in UNRESOLVED_KEYS and not where:
-                self.add(UNRESOLVED_KEYS[key],
-                         f"Remove {key} from the run file until the specification "
-                         "settles this key.", UNSUPPORTED, blocked=True)
-            elif key not in allowed:
+            if key not in allowed:
                 self.add(f"{where}{_shown(key)} is not part of the {self._schema} run-file "
                          "schema.", f"Remove it; the allowed keys here are "
                          f"{_listing(allowed)}.")
