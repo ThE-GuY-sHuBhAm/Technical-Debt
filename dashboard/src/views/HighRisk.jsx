@@ -22,16 +22,18 @@ function sortValue(row, key) {
 }
 
 export function SortableTable({ rows }) {
-  const [sort, setSort] = useState({ key: 'rank', ascending: true });
+  // Rows start in rank order with no column selected, so that the first click on any
+  // heading, Rank included, sorts ascending and the next one descending (TC-095).
+  const [sort, setSort] = useState({ key: null, ascending: true });
   const ranked = rows.map((row, index) => ({ ...row, rank: index + 1 }));
-  const sorted = [...ranked].sort((a, b) => {
+  const sorted = sort.key === null ? ranked : [...ranked].sort((a, b) => {
     const left = sortValue(a, sort.key);
     const right = sortValue(b, sort.key);
     const order = typeof left === 'string' ? left.localeCompare(right) : left - right;
     return (sort.ascending ? order : -order) || a.rank - b.rank;
   });
   const toggle = (key) => setSort((old) => ({ key,
-    ascending: old.key === key ? !old.ascending : key === 'rank' || key === 'path' }));
+    ascending: old.key === key ? !old.ascending : true }));
   return (
     <div className="table-wrap">
       <table>

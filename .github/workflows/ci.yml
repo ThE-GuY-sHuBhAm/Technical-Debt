@@ -11,6 +11,13 @@
 # dashboard-guard  Section 6: research commits change nothing under dashboard/.
 # live-github      FR-03/FR-04 against the real api.github.com (tests/product/
 #                  test_github_live.py); elsewhere those tests are skipped, not passed.
+#                  It also runs TC-142: a full real analysis under strace, whose every
+#                  connection must go to GitHub's published addresses.
+# tc145            TC-145 / NFR-23: every tests cell writes the MD5 of FX-M's CSV export
+#                  (from the TC-128 test); this job checks that all of them are equal.
+# browser          The workbook's browser cases (tests/browser) in headless Chrome with
+#                  Selenium, against a TDEA server on 127.0.0.1 with FR-03 answered by a
+#                  stubbed transport; elsewhere they are skipped, not passed.
 #
 # Runner images: ubuntu-22.04 is the version TC-143 names (GitHub retires it on
 # 17 Apr 2027). GitHub no longer offers macOS 13 or an x64 Windows 11 image, so
@@ -62,6 +69,8 @@ jobs:
       - name: Console script
         run: tdea research --help
       - name: Test suite with coverage
+        env:
+          TDEA_TC145_OUT: ${{ github.workspace }}/tc145.md5
         run: |
           if [ "${{ matrix.python }}" = "3.11" ]; then
             suite=()
@@ -77,6 +86,28 @@ jobs:
           else
             python tools/coverage_by_package.py coverage.json
           fi
+      - name: FX-M CSV MD5 for TC-145
+        uses: actions/upload-artifact@v4
+        with:
+          name: tc145-${{ matrix.os }}-python-${{ matrix.python }}
+          path: tc145.md5
+          if-no-files-found: error
+
+  tc145:
+    name: same FX-M CSV MD5 on every OS (TC-145)
+    needs: tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tc145-*
+      - name: Compare the MD5 of every cell
+        run: |
+          for folder in tc145-*; do
+            printf '%s  %s\n' "$(tr -d '\r\n' < "$folder/tc145.md5")" "$folder"
+          done
+          test "$(cat tc145-*/tc145.md5 | tr -d '\r' | sort -u | wc -l)" -eq 1
+          test "$(ls -d tc145-* | wc -l)" -eq 9
 
   quality:
     name: quality gates (Python ${{ matrix.python }})
@@ -124,7 +155,31 @@ jobs:
           cache-dependency-path: pyproject.toml
       - name: Install tdea with the dev extra
         run: python -m pip install -e ".[dev]"
-      - name: Real GET /repos/{owner}/{repo}, no token
+      - name: strace for TC-142
+        run: command -v strace || (sudo apt-get update && sudo apt-get install -y strace)
+      - name: Real GET /repos/{owner}/{repo}, no token; TC-142 full analysis
         env:
           TDEA_LIVE_GITHUB: "1"
-        run: python -m pytest tests/product/test_github_live.py -v -rs
+          TDEA_TC142: "1"
+        run: python -m pytest tests/product/test_github_live.py -v -rs -s
+
+  browser:
+    name: browser (Selenium, headless Chrome)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install tdea with the dev extra
+        run: python -m pip install -e ".[dev]"
+      - name: Chrome and ChromeDriver on the runner
+        run: |
+          google-chrome --version
+          "$CHROMEWEBDRIVER/chromedriver" --version
+      - name: Workbook browser cases
+        env:
+          TDEA_BROWSER_TESTS: "1"
+        run: python -m pytest tests/browser -v -rs --durations=20

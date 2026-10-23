@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 
 import make_fx_product
@@ -19,7 +20,7 @@ from repo_builder import RepoBuilder
 from tdea.aggregator import product_store
 from tdea.aggregator.analysis_service import AUDIT_FILE, SubmissionRefused
 from tdea.aggregator.lock import AnalysisLock
-from tdea.aggregator.product_models import COMPLETE, ERROR, RUNNING
+from tdea.aggregator.product_models import COMPLETE, ERROR, PENDING, RUNNING
 from tdea.aggregator.product_store import ProductStore
 from tdea.git_handler.errors import ErrorCode, TdeaError
 
@@ -188,12 +189,12 @@ def test_an_interrupted_analysis_leaves_no_commit_records(fx_s, tmp_path: Path,
 
 
 def test_a_run_left_running_is_marked_interrupted_on_restart(tmp_path: Path) -> None:
-    """NFR-08: a repository still Running when the store reopens becomes an Error."""
+    """NFR-08: a repository still Pending or Running when the store reopens becomes an Error."""
     store = ProductStore(tmp_path / "tdea.db")
     from datetime import datetime, timezone  # pylint: disable=import-outside-toplevel
     repository_id = store.start("a/b", "https://github.com/a/b", "a", "b", 2,
                                 datetime(2026, 10, 23, tzinfo=timezone.utc))
-    assert store.repository(repository_id).status == RUNNING
+    assert store.repository(repository_id).status == PENDING
     store.close()
     service = local_service(tmp_path, {})
     row = service.store.repository(repository_id)
@@ -214,6 +215,46 @@ def test_two_repositories_in_sequence_for_comparison(fx_s, tmp_path: Path) -> No
     with pytest.raises(SubmissionRefused):
         service.submit_pair(FX_S_URL, FX_S_URL.upper().replace("HTTPS://GITHUB.COM",
                                                                 "https://github.com"))
+
+
+class GatedSources(dict):
+    """Fixture sources whose clone waits until the test opens the gate (TC-087)."""
+
+    def __init__(self, sources: dict[str, Path]) -> None:
+        """Serve ``sources``; record each repository's status when its clone begins."""
+        super().__init__(sources)
+        self.gate, self.entered = threading.Event(), threading.Event()
+        self.status_at_clone: dict[str, str] = {}
+        self.service = None
+
+    def __getitem__(self, key: str) -> Path:
+        """Record the status, then hold the clone until the gate opens."""
+        self.status_at_clone[key] = self.service.store.find(key).status
+        self.entered.set()
+        assert self.gate.wait(60)
+        return super().__getitem__(key)
+
+
+def test_the_second_repository_of_a_pair_is_pending_until_its_turn(fx_s, tmp_path: Path
+                                                                   ) -> None:
+    """FR-30, TC-087: Pending from submission, Running from the start of its run, Complete."""
+    fx_err = make_fx_product.build_fx_err(tmp_path / "fx-err")
+    sources = GatedSources({"tdea-fixtures/fx-s": fx_s.path,
+                            "tdea-fixtures/fx-err": fx_err.path})
+    service = local_service(tmp_path / "ws", sources)
+    sources.service = service
+    first, second = service.submit_pair(FX_S_URL, FX_ERR_URL)
+    assert sources.entered.wait(60)
+
+    def status(item) -> str:
+        return service.store.repository(item.repository_id).status
+
+    assert (status(first), status(second)) == (RUNNING, PENDING)
+    sources.gate.set()
+    assert service.wait(first.repository_id, 300) and service.wait(second.repository_id, 300)
+    assert sources.status_at_clone == {"tdea-fixtures/fx-s": RUNNING,
+                                       "tdea-fixtures/fx-err": RUNNING}
+    assert (status(first), status(second)) == (COMPLETE, COMPLETE)
 
 
 def test_a_cancelled_analysis_stops_and_stores_nothing(fx_s, tmp_path: Path) -> None:

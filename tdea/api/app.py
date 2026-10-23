@@ -88,5 +88,8 @@ def create_app(service: AnalysisService | None = None, *,
 
 
 def error_body(error: ApiError) -> dict[str, dict[str, str]]:
-    """Return the FR-05 JSON body of an error."""
-    return {"error": {"type": error.error_type, "cause": error.cause, "action": error.action}}
+    """Return the FR-05 JSON body of an error, with the request field it concerns if any."""
+    body = {"type": error.error_type, "cause": error.cause, "action": error.action}
+    if error.field:
+        body["field"] = error.field
+    return {"error": body}

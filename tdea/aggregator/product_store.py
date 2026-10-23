@@ -29,8 +29,9 @@ from sqlalchemy import delete, null, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from tdea.aggregator.product_models import (COMPLETE, ERROR, RUNNING, AggregateMetric, Commit,
-                                            FileMetric, ProductBase, Repository)
+from tdea.aggregator.product_models import (COMPLETE, ERROR, PENDING, RUNNING,
+                                            AggregateMetric, Commit, FileMetric,
+                                            ProductBase, Repository)
 from tdea.aggregator.research_models import canonical_json, iso_utc
 from tdea.aggregator.research_store import open_sqlite
 from tdea.aggregator.scoring import CommitAggregate
@@ -119,7 +120,7 @@ class ProductStore:
 
     def start(self, full_name_key: str, url: str, owner: str, name: str, sampling_n: int,
               now: datetime) -> int:
-        """Record that an analysis of the repository starts; return its repository_id."""
+        """Record a submitted analysis as Pending (FR-30); return its repository_id."""
         with self.transaction() as session:
             row = session.scalars(select(Repository).where(
                 Repository.full_name_key == full_name_key)).one_or_none()
@@ -128,11 +129,16 @@ class ProductStore:
                                  name=name, commits_analysed=0, file_errors=0)
                 session.add(row)
             row.url, row.owner, row.name = url, owner, name
-            row.status, row.sampling_n = RUNNING, sampling_n
+            row.status, row.sampling_n = PENDING, sampling_n
             row.requested_at = iso_utc(now)
             row.error_type = row.error_cause = row.error_action = None
             session.flush()
             return row.repository_id
+
+    def mark_running(self, repository_id: int) -> None:
+        """Record that the repository's Pending analysis has begun (FR-30)."""
+        with self.transaction() as session:
+            session.get(Repository, repository_id).status = RUNNING
 
     def fail(self, repository_id: int, error_type: str, cause: str, action: str) -> None:
         """Mark the analysis failed with its three-part error; earlier results are kept."""
@@ -165,9 +171,10 @@ class ProductStore:
             row.last_completed_at = iso_utc(now)
 
     def recover_interrupted(self) -> int:
-        """Mark analyses left Running by a stopped process as Error; return how many."""
+        """Mark analyses left Pending or Running by a stopped process as Error; return how many."""
         with self.transaction() as session:
-            rows = session.scalars(select(Repository).where(Repository.status == RUNNING)).all()
+            rows = session.scalars(select(Repository).where(
+                Repository.status.in_((PENDING, RUNNING)))).all()
             for row in rows:
                 row.status = ERROR
                 row.error_type = "Analysis interrupted"

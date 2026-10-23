@@ -1,6 +1,7 @@
 // Research Comparison (FR-44 to FR-47): choose two repositories from the analysis
 // history or analyse two new ones, then see both Debt Score timelines overlaid by
-// commit sequence, the statistical summary panel and the comparison CSV.
+// commit sequence, the statistical summary panel and the comparison CSV. A refused URL's
+// error appears under its own field, and both fields keep their values (TC-115).
 import { useState } from 'react';
 import { api, downloads } from '../api.js';
 import { ComparisonChart } from '../charts.jsx';
@@ -68,12 +69,14 @@ function Chooser({ first, second }) {
         <form className="form" onSubmit={analyse} noValidate>
           <label htmlFor="url-1">First GitHub repository URL</label>
           <input id="url-1" type="url" autoComplete="off" value={urls.url_1}
-            placeholder="https://github.com/owner/repository"
+            placeholder="https://github.com/owner/repository" aria-invalid={error?.field === 'url_1'}
             onChange={(event) => setUrls({ ...urls, url_1: event.target.value })} />
+          {error?.field === 'url_1' && <ErrorPanel error={error} />}
           <label htmlFor="url-2">Second GitHub repository URL</label>
           <input id="url-2" type="url" autoComplete="off" value={urls.url_2}
-            placeholder="https://github.com/owner/repository"
+            placeholder="https://github.com/owner/repository" aria-invalid={error?.field === 'url_2'}
             onChange={(event) => setUrls({ ...urls, url_2: event.target.value })} />
+          {error?.field === 'url_2' && <ErrorPanel error={error} />}
           <label htmlFor="pair-token">Personal Access Token (optional)</label>
           <input id="pair-token" type="password" autoComplete="off" value={urls.token}
             onChange={(event) => setUrls({ ...urls, token: event.target.value })} />
@@ -83,7 +86,7 @@ function Chooser({ first, second }) {
             </button>
           </div>
         </form>
-        <ErrorPanel error={error} />
+        {!error?.field && <ErrorPanel error={error} />}
       </details>
     </section>
   );

@@ -28,6 +28,7 @@ class ApiError(Exception):
         self.cause = cause
         self.action = action
         self.status = status
+        self.field: str | None = None  # the request field the error is about, if one
 
     @classmethod
     def wrap(cls, error: object, status: int | None = None) -> ApiError:

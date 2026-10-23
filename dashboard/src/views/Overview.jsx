@@ -40,7 +40,7 @@ export default function Overview({ repo }) {
         {(data) => (
           <>
             <OverviewCard overview={data} />
-            {data.status === 'Running' && (
+            {(data.status === 'Running' || data.status === 'Pending') && (
               <p><Link to={href('/progress', { repo })}>An analysis is running: show its progress</Link></p>
             )}
             {data.error && <ErrorPanel error={data.error} />}

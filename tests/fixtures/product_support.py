@@ -4,6 +4,8 @@ StubClient stands in for the FR-03 GitHub check: it records the tokens it is giv
 raises a chosen TdeaError, so no test reaches the network. local_service() builds an
 AnalysisService whose engine clones a local fixture repository for each placeholder
 github.com URL; analysed() submits a URL and waits for the background analysis.
+CountingSources is a source mapping that records every clone, for the cases that must
+show that nothing was cloned (cache, restart, comparison from history).
 """
 
 from __future__ import annotations
@@ -32,6 +34,20 @@ class StubClient:
         self.tokens.append(token)
         if self.failure is not None:
             raise self.failure
+
+
+class CountingSources(dict):
+    """The local fixture behind each repository key; records every clone (TC-004, TC-116)."""
+
+    def __init__(self, sources: dict[str, Path]) -> None:
+        """Serve ``sources``."""
+        super().__init__(sources)
+        self.clones: list[str] = []
+
+    def __getitem__(self, key: str) -> Path:
+        """Record the clone, then return the fixture path."""
+        self.clones.append(key)
+        return super().__getitem__(key)
 
 
 def local_service(root: Path, sources: dict[str, Path],

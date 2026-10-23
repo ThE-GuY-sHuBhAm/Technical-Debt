@@ -9,6 +9,10 @@ import { duration, shortSha } from '../format.js';
 import { href, Link, navigate } from '../router.jsx';
 
 const POLL_MS = 1000;
+const DONE_PAUSE_MS = 800;
+
+// FR-30: Pending (waiting for its turn) and Running analyses can both still be cancelled.
+const active = (row) => row.status === 'Running' || row.status === 'Pending';
 
 function stageText(row) {
   const progress = row.progress;
@@ -44,12 +48,13 @@ export default function Progress({ params }) {
         setRows(answer);
         setError(null);
         if (answer.every((row) => row.status === 'Complete')) {
-          navigate(next === 'compare'
+          // TC-099: the bar shows 100 % for a moment before the results open.
+          timer = setTimeout(() => navigate(next === 'compare'
             ? href('/compare', { repo_1: ids[0], repo_2: ids[1] })
-            : href('/overview', { repo: ids[0] }), true);
+            : href('/overview', { repo: ids[0] }), true), DONE_PAUSE_MS);
           return;
         }
-        if (answer.some((row) => row.status === 'Running' || row.status === 'Pending')) {
+        if (answer.some(active)) {
           timer = setTimeout(poll, POLL_MS);
         }
       } catch (failure) {
@@ -64,7 +69,7 @@ export default function Progress({ params }) {
 
   const cancel = async () => {
     setCancelling(true);
-    await Promise.all((rows ?? []).filter((row) => row.status === 'Running')
+    await Promise.all((rows ?? []).filter(active)
       .map((row) => api.cancel(row.repository_id).catch(() => null)));
     navigate('/');
   };
@@ -73,7 +78,7 @@ export default function Progress({ params }) {
     return <ErrorPanel error={{ type: 'No analysis chosen', cause: 'This page needs a repository.',
       action: 'Start an analysis on the Home page.' }} />;
   }
-  const running = (rows ?? []).some((row) => row.status === 'Running' || row.status === 'Pending');
+  const running = (rows ?? []).some(active);
   const failed = (rows ?? []).filter((row) => row.status === 'Error');
 
   return (
