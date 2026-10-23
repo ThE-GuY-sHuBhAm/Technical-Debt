@@ -112,7 +112,25 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     export.add_argument("--out", required=True, help="new or empty output folder")
     export.add_argument("--format", choices=FORMATS, default="csv", dest="fmt",
                         help="record file format (default csv)")
+    serve = commands.add_parser(
+        "serve", help="start the web dashboard and REST API on this computer",
+        description="Start the TDEA web application (dashboard and REST API) on a local "
+                    "address. Results are kept in the product store, tdea.db.")
+    serve.add_argument("--host", default="127.0.0.1", help="address (default 127.0.0.1)")
+    serve.add_argument("--port", type=int, default=5000, help="port (default 5000)")
+    serve.add_argument("--store", default=None, help="path of tdea.db (default ~/.tdea/tdea.db)")
     return parser, research
+
+
+def _serve(args: argparse.Namespace) -> int:
+    """Run the web application until it is stopped (Ctrl+C)."""
+    from tdea.api.app import create_app  # pylint: disable=import-outside-toplevel
+    from tdea.aggregator.product_store import (  # pylint: disable=import-outside-toplevel
+        DEFAULT_PRODUCT_STORE)
+    app = create_app(store_path=args.store or DEFAULT_PRODUCT_STORE)
+    print(f"TDEA is running at http://{args.host}:{args.port}/ (Ctrl+C stops it).", flush=True)
+    app.run(host=args.host, port=args.port, threaded=True, use_reloader=False)
+    return EXIT_OK
 
 
 def main(argv: Sequence[str] | None = None,
@@ -128,6 +146,8 @@ def main(argv: Sequence[str] | None = None,
     except SystemExit as exc:  # --help prints and exits through argparse
         return exc.code if isinstance(exc.code, int) else EXIT_OK
 
+    if args.command == "serve":
+        return _serve(args)
     if args.command != "research":
         parser.print_help()
         return EXIT_OK

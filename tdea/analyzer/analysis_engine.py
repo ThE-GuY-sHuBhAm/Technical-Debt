@@ -8,8 +8,8 @@ does exactly that. The log line holds only the path, the SHA and the exception t
 never the exception message, which can quote file content (Decision 2: logs hold SHAs,
 paths and counts only). KeyboardInterrupt and SystemExit are not caught.
 
-The product AnalysisEngine (Modules 2-3) is built on a later day; this module holds only
-the shared helper for now.
+The product pipeline (product_analyzer.ProductAnalyzer, sprint 23 Oct) and the research
+engine both use isolate().
 """
 
 from __future__ import annotations
